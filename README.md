@@ -18,6 +18,25 @@
     - YouTube Data API v3 の有効化
     - OAuth 2.0 クライアントIDの作成 (`client_secrets.json` の取得)
 
+## Google API セットアップ手順
+
+このツールを使用するには、Google Cloud プロジェクトで YouTube Data API を有効にし、認証情報を取得する必要があります。
+
+1. **プロジェクトの作成/選択**
+   - [Google Cloud Console](https://console.cloud.google.com/) にアクセスし、プロジェクトを作成または選択します。
+2. **YouTube Data API v3 の有効化**
+   - 「APIとサービス」 > 「ライブラリ」から **YouTube Data API v3** を検索し、「有効にする」をクリックします。
+3. **OAuth 同意画面の設定**
+   - 「APIとサービス」 > 「OAuth 同意画面」で、User Type を「外部」として設定します。
+   - アプリ名等の必須項目を入力し、スコープに `.../auth/youtube.upload` を追加します。
+   - **重要**: 「テストユーザー」に自分の Google アカウントのメールアドレスを追加してください。
+4. **認証情報の作成**
+   - 「APIとサービス」 > 「認証情報」 > 「認証情報を作成」 > 「OAuth クライアント ID」を選択します。
+   - アプリケーションの種類で **「デスクトップ アプリ」** を選択し、名前を入力して作成します。
+5. **JSON ファイルのダウンロード**
+   - 作成したクライアント ID の右側にあるダウンロードボタン（⬇️）から JSON ファイルを取得します。
+   - ファイル名を `client_secrets.json` に変更して、プロジェクトのルートディレクトリに配置します。
+
 ## インストール
 
 1. **リポジトリのクローン**
@@ -31,6 +50,8 @@
    ```bash
    python3 -m venv .venv
    source .venv/bin/activate
+   # pipをアップグレード（重要：ビルドツール対応のため）
+   pip install --upgrade pip
    pip install -e .
    ```
 
@@ -54,15 +75,21 @@ upload:
 
 ai:
   enabled: false       # AI機能を有効にする場合は true
-  model: "gemini-pro"
+  model: "models/gemini-3-flash-preview"
 ```
 
-### AI機能の有効化
 AIによるメタデータ生成を利用する場合は、`settings.yaml` で `ai.enabled: true` に設定し、環境変数にAPIキーをセットしてください。
+セキュリティのため、APIキーは `.env` ファイルで管理することを推奨します。
 
-```bash
-export GEMINI_API_KEY="your_api_key_here"
-```
+1. プロジェクトルートに `.env` ファイルを作成します（`.env.example` を参考にしてください）。
+   ```bash
+   cp .env.example .env
+   ```
+2. `.env` ファイルを編集し、APIキーを設定します。
+   ```properties
+   GEMINI_API_KEY="your_actual_api_key_here"
+   ```
+
 
 ## 使い方
 

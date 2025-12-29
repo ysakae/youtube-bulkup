@@ -6,3 +6,9 @@ __pycache__/
 client_secrets.json
 upload_history.json
 test_videos/
+test_videos/
+
+# Environment variables
+.env
+.env.*
+!.env.example

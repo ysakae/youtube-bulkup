@@ -1,6 +1,10 @@
 import os
 import yaml
+from dotenv import load_dotenv
 from typing import List, Optional
+
+# Load environment variables from .env file
+load_dotenv()
 from pydantic import BaseModel, Field
 
 class AuthConfig(BaseModel):
@@ -19,7 +23,9 @@ class UploadConfig(BaseModel):
 class AIConfig(BaseModel):
     enabled: bool = False
     api_key: Optional[str] = None
-    model: str = "gemini-pro"
+    api_key: Optional[str] = None
+    model: str = "models/gemini-3-flash-preview"
+    language: str = "ja"
 
 class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
