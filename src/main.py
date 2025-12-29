@@ -26,49 +26,26 @@ from .scanner import calculate_hash, scan_directory
 from .uploader import VideoUploader
 
 app = typer.Typer(help="YouTube Bulk Uploader CLI", add_completion=False)
+auth_app = typer.Typer(help="Manage authentication profiles.")
+app.add_typer(auth_app, name="auth")
 console = Console()
 logger = logging.getLogger("youtube_up")
 
 
-@app.command()
-def auth(
-    login: str = typer.Option(None, "--login", help="Create/Login to a new profile"),
-    switch: str = typer.Option(None, "--switch", help="Switch to an existing profile"),
-    list_p: bool = typer.Option(False, "--list", help="List all profiles"),
-):
+@auth_app.callback(invoke_without_command=True)
+def auth_main(ctx: typer.Context):
     """
     Manage authentication profiles.
+    Running 'yt-up auth' without arguments shows the current status.
     """
+    if ctx.invoked_subcommand is None:
+        show_status()
+
+
+def show_status():
+    """Show current authentication status."""
     setup_logging()
-
     try:
-        if list_p:
-            profiles = list_profiles()
-            active = get_active_profile()
-            console.print("[bold]Available Profiles:[/]")
-            for p in profiles:
-                mark = "*" if p == active else " "
-                console.print(f" {mark} {p}")
-            return
-
-        if switch:
-            profiles = list_profiles()
-            if switch not in profiles:
-                console.print(f"[bold red]Profile '{switch}' not found.[/]")
-                console.print(f"Available: {', '.join(profiles)}")
-                raise typer.Exit(code=1)
-
-            set_active_profile(switch)
-            console.print(f"[bold green]Switched to profile: {switch}[/]")
-            # Fallthrough to verify
-
-        if login:
-            console.print(f"[bold]Logging in as new profile: {login}...[/]")
-            service = authenticate_new_profile(login)
-            console.print(f"[bold green]Successfully authenticated profile: {login}[/]")
-            # Fallthrough to verify
-
-        # Default: Show status / Verify active
         active = get_active_profile()
         console.print(f"Active Profile: [bold cyan]{active}[/]")
 
@@ -78,10 +55,12 @@ def auth(
         request = service.channels().list(part="snippet", mine=True)
         response = request.execute()
         if "items" in response:
-            channel_title = response["items"][0]["snippet"]["title"]
+            snippet = response["items"][0]["snippet"]
+            channel_title = snippet["title"]
+            custom_url = snippet.get("customUrl", "No Handle")
             console.print(
                 Panel(
-                    f"Connected to channel: [bold cyan]{channel_title}[/]",
+                    f"Connected to channel: [bold cyan]{channel_title}[/] ({custom_url})",
                     title=f"Auth Info ({active})",
                 )
             )
@@ -95,6 +74,46 @@ def auth(
     except Exception as e:
         console.print(f"[bold red]Authentication failed:[/] {e}")
         raise typer.Exit(code=1)
+
+
+@auth_app.command("login")
+def login(name: str):
+    """Create/Login to a new profile."""
+    setup_logging()
+    try:
+        console.print(f"[bold]Logging in as new profile: {name}...[/]")
+        authenticate_new_profile(name)
+        console.print(f"[bold green]Successfully authenticated profile: {name}[/]")
+        show_status()
+    except Exception as e:
+        console.print(f"[bold red]Login failed:[/] {e}")
+        raise typer.Exit(code=1)
+
+
+@auth_app.command("switch")
+def switch(name: str):
+    """Switch to an existing profile."""
+    setup_logging()
+    profiles = list_profiles()
+    if name not in profiles:
+        console.print(f"[bold red]Profile '{name}' not found.[/]")
+        console.print(f"Available: {', '.join(profiles)}")
+        raise typer.Exit(code=1)
+
+    set_active_profile(name)
+    console.print(f"[bold green]Switched to profile: {name}[/]")
+    show_status()
+
+
+@auth_app.command("list")
+def list_cmd():
+    """List all profiles."""
+    profiles = list_profiles()
+    active = get_active_profile()
+    console.print("[bold]Available Profiles:[/]")
+    for p in profiles:
+        mark = "*" if p == active else " "
+        console.print(f" {mark} {p}")
 
 
 @app.command()

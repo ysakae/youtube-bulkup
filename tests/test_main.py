@@ -20,7 +20,14 @@ class TestMain:
         mock_channels = MagicMock()
         mock_service.channels.return_value = mock_channels
         mock_channels.list.return_value.execute.return_value = {
-            "items": [{"snippet": {"title": "TestChannel"}}]
+            "items": [
+                {
+                    "snippet": {
+                        "title": "TestChannel",
+                        "customUrl": "@testhandle",
+                    }
+                }
+            ]
         }
         mock_auth.return_value = mock_service
 
@@ -31,15 +38,27 @@ class TestMain:
 
         return mock_auth
 
-    def test_auth_command(self, mock_deps, mocker):
-        """Test auth command."""
+    def test_auth_status(self, mock_deps, mocker):
+        """Test auth status (default)."""
         mocker.patch("src.main.get_active_profile", return_value="default")
         
         result = runner.invoke(app, ["auth"])
         
         assert result.exit_code == 0
         assert "Active Profile: default" in result.stdout
-        assert "Connected to channel: TestChannel" in result.stdout
+        assert "Connected to channel: TestChannel (@testhandle)" in result.stdout
+
+    def test_auth_list(self, mock_deps, mocker):
+        """Test auth list command."""
+        mocker.patch("src.main.list_profiles", return_value=["default", "other"])
+        mocker.patch("src.main.get_active_profile", return_value="default")
+        
+        result = runner.invoke(app, ["auth", "list"])
+        
+        assert result.exit_code == 0
+        assert "Available Profiles:" in result.stdout
+        assert "* default" in result.stdout
+        assert "  other" in result.stdout
 
     def test_upload_dry_run(self, mocker):
         """Test upload command in dry-run mode."""
