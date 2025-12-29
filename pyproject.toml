@@ -19,7 +19,22 @@ dependencies = [
     "google-genai>=0.3.0",
     "tinydb>=4.8.0",
     "python-dotenv>=1.0.0",
+    "python-dotenv>=1.0.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-mock>=3.12.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "--cov=src --cov-report=term-missing"
+testpaths = ["tests"]
+pythonpath = ["."]
+
 
 [project.scripts]
 yt-up = "src.main:app"
