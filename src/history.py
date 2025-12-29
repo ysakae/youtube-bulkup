@@ -40,3 +40,12 @@ class HistoryManager:
 
     def get_upload_count(self) -> int:
         return len(self.table)
+
+    def get_all_records(self, limit: Optional[int] = None) -> list:
+        """Get all upload records, sorted by timestamp descending."""
+        records = self.table.all()
+        # Sort by timestamp desc, handling missing timestamps
+        records.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        if limit and limit > 0:
+            return records[:limit]
+        return records

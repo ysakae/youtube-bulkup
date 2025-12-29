@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import typer
@@ -14,6 +15,7 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
+from rich.table import Table
 
 from .ai import MetadataGenerator
 from .auth import authenticate_new_profile, get_authenticated_service
@@ -93,6 +95,42 @@ def auth(
     except Exception as e:
         console.print(f"[bold red]Authentication failed:[/] {e}")
         raise typer.Exit(code=1)
+
+
+@app.command()
+def history(
+    limit: int = typer.Option(10, help="Number of records to show"),
+):
+    """
+    Show upload history.
+    """
+    # setup_logging() # Optional, maybe not needed for just reading DB
+    history_manager = HistoryManager()
+    records = history_manager.get_all_records(limit=limit)
+
+    if not records:
+        console.print("[yellow]No upload history found.[/]")
+        return
+
+    table = Table(title="Upload History")
+    table.add_column("Date", style="cyan", no_wrap=True)
+    table.add_column("Title", style="magenta")
+    table.add_column("Video ID", style="green")
+    table.add_column("File", style="dim")
+
+    for r in records:
+        ts = r.get("timestamp")
+        date_str = (
+            datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "N/A"
+        )
+        vid = r.get("video_id", "N/A")
+        link = f"[link=https://youtu.be/{vid}]{vid}[/link]" if vid != "N/A" else "N/A"
+        title = r.get("metadata", {}).get("title", "N/A")
+        path = Path(r.get("file_path", "")).name
+
+        table.add_row(date_str, title, link, path)
+
+    console.print(table)
 
 
 @app.command()
