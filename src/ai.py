@@ -1,12 +1,15 @@
-import os
 import json
 import logging
-import google.genai as genai
-from typing import Dict, Any, Optional
+import os
 from pathlib import Path
+from typing import Any, Dict
+
+import google.genai as genai
+
 from .config import config
 
 logger = logging.getLogger("youtube_up")
+
 
 class MetadataGenerator:
     def __init__(self):
@@ -16,7 +19,9 @@ class MetadataGenerator:
             self.client = genai.Client(api_key=self.api_key)
             self.model_name = config.ai.model
         elif self.enabled:
-            logger.warning("AI enabled but no API Key found. Metadata generation will be skipped.")
+            logger.warning(
+                "AI enabled but no API Key found. Metadata generation will be skipped."
+            )
 
     async def generate_metadata(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -26,7 +31,7 @@ class MetadataGenerator:
         default_metadata = {
             "title": file_path.stem.replace("_", " ").title(),
             "description": f"Uploaded via YouTube Bulk Uploader.\n\nFilename: {file_path.name}",
-            "tags": ["auto-upload"]
+            "tags": ["auto-upload"],
         }
 
         if not self.enabled or not self.api_key:
@@ -58,19 +63,18 @@ class MetadataGenerator:
         try:
             # Use AsyncClient via aio
             response = await self.client.aio.models.generate_content(
-                model=self.model_name,
-                contents=prompt
+                model=self.model_name, contents=prompt
             )
             text = response.text.strip()
-            
+
             # Clean up potential markdown code blocks
             if text.startswith("```json"):
                 text = text[7:]
             if text.endswith("```"):
                 text = text[:-3]
-            
+
             data = json.loads(text)
-            
+
             # Merge with defaults to ensure keys exist
             return {**default_metadata, **data}
 
