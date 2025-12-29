@@ -8,6 +8,14 @@ logger = logging.getLogger("youtube_up")
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
 
+def is_video_file(path: Path) -> bool:
+    """Check if file is a video based on extension."""
+    if not path.is_file():
+        return False
+    if path.name.startswith("."):
+        return False
+    return path.suffix.lower() in VIDEO_EXTENSIONS
+
 def calculate_hash(file_path: Path, chunk_size: int = 8192) -> str:
     """
     Calculate xxHash64 of a file efficiently.
@@ -32,8 +40,5 @@ def scan_directory(directory: str) -> Generator[Path, None, None]:
         return
 
     for entry in path.rglob("*"):
-        if entry.is_file() and entry.suffix.lower() in VIDEO_EXTENSIONS:
-            # Ignore hidden files
-            if entry.name.startswith("."):
-                continue
+        if is_video_file(entry):
             yield entry

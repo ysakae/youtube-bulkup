@@ -12,3 +12,8 @@ test_videos/
 .env
 .env.*
 !.env.example
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
