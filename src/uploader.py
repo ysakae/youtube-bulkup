@@ -1,15 +1,18 @@
 import asyncio
 import logging
-import random
-import time
 import socket
-from typing import Dict, Any, Optional, Callable
 from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
 from googleapiclient.discovery import Resource
-from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from googleapiclient.http import MediaFileUpload
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from .config import config
 
@@ -18,6 +21,7 @@ logger = logging.getLogger("youtube_up")
 # Define retryable exceptions
 RETRIABLE_EXCEPTIONS = (HttpError, socket.error, socket.timeout)
 
+
 class VideoUploader:
     def __init__(self, service: Resource):
         self.service = service
@@ -25,13 +29,13 @@ class VideoUploader:
     @retry(
         wait=wait_exponential(multiplier=1, min=2, max=60),
         stop=stop_after_attempt(config.upload.retry_count),
-        retry=retry_if_exception_type(RETRIABLE_EXCEPTIONS)
+        retry=retry_if_exception_type(RETRIABLE_EXCEPTIONS),
     )
     async def upload_video(
-        self, 
-        file_path: Path, 
-        metadata: Dict[str, Any], 
-        progress_callback: Optional[Callable[[int, int], None]] = None
+        self,
+        file_path: Path,
+        metadata: Dict[str, Any],
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[str]:
         """
         Uploads a single video with retry logic and progress tracking.
@@ -40,30 +44,28 @@ class VideoUploader:
         logger.info(f"Preparing upload for {file_path.name}...")
 
         body = {
-            'snippet': {
-                'title': metadata.get('title', file_path.stem),
-                'description': metadata.get('description', ''),
-                'tags': metadata.get('tags', []),
-                'categoryId': metadata.get('categoryId', '22') # 22 is People & Blogs
+            "snippet": {
+                "title": metadata.get("title", file_path.stem),
+                "description": metadata.get("description", ""),
+                "tags": metadata.get("tags", []),
+                "categoryId": metadata.get("categoryId", "22"),  # 22 is People & Blogs
             },
-            'status': {
-                'privacyStatus': metadata.get('privacy_status', config.upload.privacy_status),
-                'selfDeclaredMadeForKids': False
-            }
+            "status": {
+                "privacyStatus": metadata.get(
+                    "privacy_status", config.upload.privacy_status
+                ),
+                "selfDeclaredMadeForKids": False,
+            },
         }
 
-        # Wrap MediaFileUpload to allow blocking IO in thread if needed, 
+        # Wrap MediaFileUpload to allow blocking IO in thread if needed,
         # but here we initialize it directly as it just prepares the request.
         media = MediaFileUpload(
-            str(file_path),
-            chunksize=config.upload.chunk_size,
-            resumable=True
+            str(file_path), chunksize=config.upload.chunk_size, resumable=True
         )
 
         request = self.service.videos().insert(
-            part=','.join(body.keys()),
-            body=body,
-            media_body=media
+            part=",".join(body.keys()), body=body, media_body=media
         )
 
         video_id = await self._execute_upload(request, file_path, progress_callback)
@@ -77,16 +79,20 @@ class VideoUploader:
         response = None
         while response is None:
             status, response = await asyncio.to_thread(request.next_chunk)
-            
+
             if status:
-                progress = int(status.progress() * 100)
+                # progress = int(status.progress() * 100)
                 if progress_callback:
                     progress_callback(status.resumable_progress, status.total_size)
                 # logger.debug(f"Uploaded {progress}% of {file_path.name}")
-        
-        if response and 'id' in response:
-            logger.info(f"Upload complete for {file_path.name}. Video ID: {response['id']}")
-            return response['id']
+
+        if response and "id" in response:
+            logger.info(
+                f"Upload complete for {file_path.name}. Video ID: {response['id']}"
+            )
+            return response["id"]
         else:
-            logger.error(f"Upload failed unexpectedly for {file_path.name}. Response: {response}")
+            logger.error(
+                f"Upload failed unexpectedly for {file_path.name}. Response: {response}"
+            )
             return None

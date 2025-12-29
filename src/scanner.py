@@ -1,12 +1,13 @@
-import os
-import xxhash
 import logging
 from pathlib import Path
-from typing import Generator, List
+from typing import Generator
+
+import xxhash
 
 logger = logging.getLogger("youtube_up")
 
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.webm'}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+
 
 def is_video_file(path: Path) -> bool:
     """Check if file is a video based on extension."""
@@ -15,6 +16,7 @@ def is_video_file(path: Path) -> bool:
     if path.name.startswith("."):
         return False
     return path.suffix.lower() in VIDEO_EXTENSIONS
+
 
 def calculate_hash(file_path: Path, chunk_size: int = 8192) -> str:
     """
@@ -29,6 +31,7 @@ def calculate_hash(file_path: Path, chunk_size: int = 8192) -> str:
     except Exception as e:
         logger.error(f"Error calculating hash for {file_path}: {e}")
         return ""
+
 
 def scan_directory(directory: str) -> Generator[Path, None, None]:
     """

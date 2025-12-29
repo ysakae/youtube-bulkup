@@ -1,6 +1,5 @@
-import os
-import pytest
-from src.config import AppConfig, AuthConfig, UploadConfig, AIConfig
+from src.config import AppConfig
+
 
 class TestConfig:
     def test_default_config(self):
@@ -26,7 +25,7 @@ ai:
         settings_file.write_text(settings_content, encoding="utf-8")
 
         config = AppConfig.load(str(settings_file))
-        
+
         assert config.auth.client_secrets_file == "secret.json"
         assert config.ai.enabled is True
         assert config.ai.api_key == "yaml_key"
@@ -37,7 +36,7 @@ ai:
     def test_env_var_override(self, monkeypatch):
         """Test that environment variables (via dotenv/os) are respected if we implement that logic."""
         # Note: In the current implementation, config.py loads dotenv at module level.
-        # But AppConfig.load() itself doesn't explicitly read env vars for all fields, 
+        # But AppConfig.load() itself doesn't explicitly read env vars for all fields,
         # except mostly for what pydantic-settings might do if used, or manual logic.
         # The current code in config.py is:
         # load_dotenv()

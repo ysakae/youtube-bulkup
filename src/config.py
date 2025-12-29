@@ -1,24 +1,28 @@
 import os
+from typing import List, Optional
+
 import yaml
 from dotenv import load_dotenv
-from typing import List, Optional
 
 # Load environment variables from .env file
 load_dotenv()
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field  # noqa: E402
+
 
 class AuthConfig(BaseModel):
     client_secrets_file: str = "client_secrets.json"
     token_file: str = "token.pickle"
     scopes: List[str] = [
         "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly"
+        "https://www.googleapis.com/auth/youtube.readonly",
     ]
+
 
 class UploadConfig(BaseModel):
     chunk_size: int = 4194304  # 4MB
     retry_count: int = 5
     privacy_status: str = "private"
+
 
 class AIConfig(BaseModel):
     enabled: bool = False
@@ -26,6 +30,7 @@ class AIConfig(BaseModel):
     api_key: Optional[str] = None
     model: str = "models/gemini-3-flash-preview"
     language: str = "ja"
+
 
 class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
@@ -42,6 +47,7 @@ class AppConfig(BaseModel):
             # Allow individual sections to be partial
             return cls(**data)
         return cls()
+
 
 # Global config instance
 config = AppConfig.load()

@@ -1,7 +1,7 @@
 import pytest
-import shutil
-from pathlib import Path
-from src.scanner import scan_directory, calculate_hash, is_video_file
+
+from src.scanner import calculate_hash, is_video_file, scan_directory
+
 
 class TestScanner:
     @pytest.fixture
@@ -14,15 +14,15 @@ class TestScanner:
         #   image.jpg
         #   subdir/
         #     video3.mkv
-        
+
         (tmp_path / "video1.mp4").write_text("content1")
         (tmp_path / "video2.MOV").write_text("content2")
         (tmp_path / "image.jpg").write_text("image")
-        
+
         subdir = tmp_path / "subdir"
         subdir.mkdir()
         (subdir / "video3.mkv").write_text("content3")
-        
+
         return tmp_path
 
     def test_is_video_file(self, tmp_path):
@@ -46,7 +46,7 @@ class TestScanner:
         """Test recursive scanning."""
         files = list(scan_directory(str(test_dir)))
         filenames = [f.name for f in files]
-        
+
         assert len(files) == 3
         assert "video1.mp4" in filenames
         assert "video2.MOV" in filenames
@@ -62,9 +62,9 @@ class TestScanner:
         """Test fast hashing (just checking consistency, not algo correctness per se)."""
         f = tmp_path / "test.mp4"
         f.write_text("test content" * 1000)
-        
+
         hash1 = calculate_hash(f)
         hash2 = calculate_hash(f)
-        
+
         assert hash1 == hash2
         assert len(hash1) > 0
