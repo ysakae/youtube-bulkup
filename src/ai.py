@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-import google.generativeai as genai
+import google.genai as genai
 from typing import Dict, Any, Optional
 from pathlib import Path
 from .config import config
@@ -13,8 +13,8 @@ class MetadataGenerator:
         self.enabled = config.ai.enabled
         self.api_key = config.ai.api_key or os.getenv("GEMINI_API_KEY")
         if self.enabled and self.api_key:
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel(config.ai.model)
+            self.client = genai.Client(api_key=self.api_key)
+            self.model_name = config.ai.model
         elif self.enabled:
             logger.warning("AI enabled but no API Key found. Metadata generation will be skipped.")
 
@@ -34,23 +34,28 @@ class MetadataGenerator:
 
         logger.info(f"Generating AI metadata for {file_path.name}...")
 
+        language = config.ai.language
+        lang_instruction = "in Japanese" if language == "ja" else f"in {language}"
+
         prompt = f"""
         You are a YouTube SEO expert.
         Generate metadata for a video file named "{file_path.name}".
+        The content should be generated **{lang_instruction}**.
         
         Return ONLY a raw JSON object (no markdown formatting) with the following structure:
         {{
-            "title": "Engaging Title (max 100 chars)",
-            "description": "SEO optimized description (3-5 lines)",
+            "title": "Engaging Title (max 100 chars, {lang_instruction})",
+            "description": "SEO optimized description (3-5 lines, {lang_instruction})",
             "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
         }}
         """
 
         try:
-            # For now, we only use text prompt based on filename.
-            # Multimodal (video analysis) would require uploading the file to GenAI File API first,
-            # which adds latency/complexity.
-            response = await self.model.generate_content_async(prompt)
+            # Use AsyncClient via aio
+            response = await self.client.aio.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
             text = response.text.strip()
             
             # Clean up potential markdown code blocks
