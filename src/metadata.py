@@ -89,30 +89,29 @@ class FileMetadataGenerator:
             parser = createParser(str(file_path))
             if not parser:
                 logger.warning(f"Unable to parse file: {file_path}")
-                return info
+                # Continue to fallback
+            else:
+                metadata = extractMetadata(parser)
+                if not metadata:
+                    logger.warning(f"No metadata found for: {file_path}")
+                else:
+                    # Extract Creation Date
+                    if metadata.has("creation_date"):
+                        info["creation_date"] = metadata.get("creation_date")
+                    
+                    # Extract Duration
+                    if metadata.has("duration"):
+                        info["duration"] = metadata.get("duration")
 
-            metadata = extractMetadata(parser)
-            if not metadata:
-                logger.warning(f"No metadata found for: {file_path}")
-                return info
-
-            # Extract Creation Date
-            if metadata.has("creation_date"):
-                info["creation_date"] = metadata.get("creation_date")
-            
-            # Extract Duration
-            if metadata.has("duration"):
-                info["duration"] = metadata.get("duration")
-
-            # Extract GPS Data
-            # Note: The keys depend on hachoir's parser implementation for specific file types.
-            # Common keys are 'latitude', 'longitude', 'altitude'.
-            if metadata.has("latitude"):
-                info["latitude"] = metadata.get("latitude")
-            if metadata.has("longitude"):
-                info["longitude"] = metadata.get("longitude")
-            if metadata.has("altitude"):
-                info["altitude"] = metadata.get("altitude")
+                    # Extract GPS Data
+                    # Note: The keys depend on hachoir's parser implementation for specific file types.
+                    # Common keys are 'latitude', 'longitude', 'altitude'.
+                    if metadata.has("latitude"):
+                        info["latitude"] = metadata.get("latitude")
+                    if metadata.has("longitude"):
+                        info["longitude"] = metadata.get("longitude")
+                    if metadata.has("altitude"):
+                        info["altitude"] = metadata.get("altitude")
 
         except Exception as e:
             logger.error(f"Error extracting metadata for {file_path}: {e}")
@@ -120,4 +119,67 @@ class FileMetadataGenerator:
             if parser:
                 parser.close()
         
+        # Fallback: If no GPS data from hachoir, try binary scan
+        if "latitude" not in info:
+            gps_from_binary = self._scan_gps_from_bytes(file_path)
+            if gps_from_binary:
+                info.update(gps_from_binary)
+
         return info
+
+    def _scan_gps_from_bytes(self, file_path: Path) -> Dict[str, Any]:
+        """
+        Fallback method to scan binary for ISO 6709 GPS string.
+        Pattern: ±DD.DDDD±DDD.DDDD(±AAA.AAA/)
+        Example: +35.4524+139.6431/
+        """
+        import re
+        # Regex for ISO 6709: (lat)(long)(alt optional)
+        # Lat: +35.4524
+        # Long: +139.6431
+        # Alt: +10.0/ (Optional, trailing slash)
+        pattern = re.compile(rb'([+-]\d+\.\d+)([+-]\d+\.\d+)(?:([+-]\d+\.?\d*)/)?')
+        
+        try:
+            with open(file_path, 'rb') as f:
+                # Scan first 50MB (usually sufficient for metadata atoms)
+                data = f.read(50 * 1024 * 1024)
+                
+                match = pattern.search(data)
+                
+                if match:
+                    lat_b, long_b, alt_b = match.groups()
+                    result = {
+                        "latitude": float(lat_b),
+                        "longitude": float(long_b)
+                    }
+                    if alt_b:
+                        result["altitude"] = float(alt_b)
+                    
+                    logger.info(f"GPS extracted via binary scan: {result}")
+                    return result
+                
+                # Try scanning tail (last 5MB)
+                f.seek(0, 2)
+                total_size = f.tell()
+                if total_size > 50 * 1024 * 1024:
+                    f.seek(max(0, total_size - 5 * 1024 * 1024))
+                    data = f.read()
+                    
+                    match = pattern.search(data)
+                    if match:
+                        lat_b, long_b, alt_b = match.groups()
+                        result = {
+                            "latitude": float(lat_b),
+                            "longitude": float(long_b)
+                        }
+                        if alt_b:
+                            result["altitude"] = float(alt_b)
+                        
+                        logger.info(f"GPS extracted via binary scan (tail): {result}")
+                        return result
+                    
+        except Exception as e:
+            logger.warning(f"Binary GPS scan failed for {file_path}: {e}")
+        
+        return {}

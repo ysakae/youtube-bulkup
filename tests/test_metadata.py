@@ -91,3 +91,69 @@ class TestFileMetadataGenerator:
         assert rec_details["location"]["latitude"] == 35.6895
         assert rec_details["location"]["longitude"] == 139.6917
         assert rec_details["location"]["altitude"] == 10.5
+
+    @patch("src.metadata.createParser")
+    @patch("builtins.open", new_callable=MagicMock)
+    def test_generate_fallback_binary_scan(self, mock_file, mock_parser, generator):
+        """Test fallback GPS extraction from binary when hachoir fails."""
+        # Setup hachoir to fail finding GPS
+        mock_parser.return_value = None  # Or return metadata without GPS keys
+        
+        # Setup mock file content with ISO 6709 string
+        # Content: random bytes + "+35.1234+135.5678/" + random bytes
+        mock_handler = MagicMock()
+        mock_handler.read.return_value = b'\x00\x01' * 100 + b'+35.1234+135.5678/' + b'\xff' * 100
+        mock_handler.__enter__.return_value = mock_handler
+        mock_file.return_value = mock_handler
+        
+        file_path = Path("/path/to/binary_gps.mov")
+        
+        # Execute
+        result = generator.generate(file_path, index=1, total=1)
+        
+        # Verify
+        rec_details = result["recordingDetails"]
+        assert "location" in rec_details
+        assert rec_details["location"]["latitude"] == 35.1234
+        assert rec_details["location"]["longitude"] == 135.5678
+        assert rec_details["location"]["latitude"] == 35.1234
+        assert rec_details["location"]["longitude"] == 135.5678
+        # Altitude was not in our mock string (optional)
+        assert "altitude" not in rec_details["location"]
+
+    @patch("src.metadata.createParser")
+    @patch("builtins.open", new_callable=MagicMock)
+    def test_generate_fallback_binary_scan_tail(self, mock_file, mock_parser, generator):
+        """Test fallback GPS extraction from binary tail (large file)."""
+        mock_parser.return_value = None
+        
+        # Setup mock file handler
+        mock_handler = MagicMock()
+        
+        # Simulate file > 50MB
+        # We need to mock .read() calls.
+        # First read (head): random bytes
+        # Second read (tail): valid ISO string
+        
+        # We also need to mock seek/tell behavior properly or just mock read return values in order.
+        # file.read(50MB) -> random
+        # file.read() (after seek) -> valid GPS
+        
+        def side_effect_read(size=-1):
+            if size == 50 * 1024 * 1024:
+                return b'\x00' * size # Head
+            return b'garbage ' + b'+40.1234+140.5678/' + b' garbage' # Tail
+            
+        mock_handler.read.side_effect = side_effect_read
+        mock_handler.tell.return_value = 60 * 1024 * 1024 # 60MB Total Size
+        mock_handler.__enter__.return_value = mock_handler
+        mock_file.return_value = mock_handler
+        
+        file_path = Path("/path/to/large_video.mov")
+        
+        result = generator.generate(file_path, index=1, total=1)
+        
+        rec_details = result["recordingDetails"]
+        assert "location" in rec_details
+        assert rec_details["location"]["latitude"] == 40.1234
+        assert rec_details["location"]["longitude"] == 140.5678
