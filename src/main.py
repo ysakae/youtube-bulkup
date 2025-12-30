@@ -17,7 +17,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from .ai import MetadataGenerator
+from .metadata import FileMetadataGenerator
 from .auth import authenticate_new_profile, get_authenticated_service, logout
 from .history import HistoryManager
 from .logger import setup_logging
@@ -189,11 +189,11 @@ def upload(
 
     uploader = VideoUploader(service) if service else None
     history = HistoryManager()
-    ai_gen = MetadataGenerator()
+    meta_gen = FileMetadataGenerator()
 
     # Run async orchestrator
     asyncio.run(
-        orchestrate_upload(directory, uploader, history, ai_gen, dry_run, workers)
+        orchestrate_upload(directory, uploader, history, meta_gen, dry_run, workers)
     )
 
 
@@ -201,7 +201,7 @@ async def orchestrate_upload(
     directory: str,
     uploader: VideoUploader,
     history: HistoryManager,
-    ai: MetadataGenerator,
+    metadata_gen: FileMetadataGenerator,
     dry_run: bool,
     workers: int,
 ):
@@ -232,7 +232,7 @@ async def orchestrate_upload(
         # Semaphore for concurrency
         sem = asyncio.Semaphore(workers)
 
-        async def process_file(file_path: Path):
+        async def process_file(file_path: Path, index: int, total_files: int):
             async with sem:
                 task_id = progress.add_task(f"Processing {file_path.name}", total=None)
 
@@ -251,19 +251,16 @@ async def orchestrate_upload(
                         progress.advance(overall_task)
                         return
 
-                    # AI Metadata
-                    progress.update(
-                        task_id,
-                        description=f"[blue]Generating Metadata {file_path.name}...",
-                    )
-                    metadata = await ai.generate_metadata(file_path)
+                    # Metadata
+                    metadata = metadata_gen.generate(file_path, index, total_files)
 
                     if dry_run:
                         progress.console.print(
                             Panel(
                                 f"Title: {metadata['title']}\n"
                                 f"Desc: {metadata['description'][:50]}...\n"
-                                f"Tags: {metadata['tags']}",
+                                f"Tags: {metadata['tags']}\n"
+                                f"Rec Details: {metadata.get('recordingDetails')}",
                                 title=f"[Dry Run] Metadata for {file_path.name}",
                             )
                         )
@@ -315,8 +312,14 @@ async def orchestrate_upload(
                     progress.update(task_id, visible=False)
                     progress.advance(overall_task)
 
+        # Prepare tasks with index
+        total_files = len(video_files)
+        tasks = []
+        for i, f in enumerate(video_files, start=1):
+            tasks.append(process_file(f, i, total_files))
+
         # Batch processing
-        await asyncio.gather(*(process_file(f) for f in video_files))
+        await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

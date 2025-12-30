@@ -65,6 +65,7 @@ class VideoUploader:
                 ),
                 "selfDeclaredMadeForKids": False,
             },
+            "recordingDetails": metadata.get("recordingDetails", {}),
         }
 
         # Wrap MediaFileUpload to allow blocking IO in thread if needed,

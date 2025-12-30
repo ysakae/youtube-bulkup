@@ -7,9 +7,6 @@ class TestConfig:
         config = AppConfig()
         assert config.auth.client_secrets_file == "client_secrets.json"
         assert config.upload.chunk_size == 4194304
-        assert config.ai.enabled is False
-        assert config.ai.model == "models/gemini-3-flash-preview"
-        assert config.ai.language == "ja"
 
     def test_load_from_yaml(self, tmp_path):
         """Test loading configuration from a YAML file."""
@@ -17,19 +14,12 @@ class TestConfig:
         settings_content = """
 auth:
   client_secrets_file: "secret.json"
-ai:
-  enabled: true
-  api_key: "yaml_key"
-  language: "en"
         """
         settings_file.write_text(settings_content, encoding="utf-8")
 
         config = AppConfig.load(str(settings_file))
 
         assert config.auth.client_secrets_file == "secret.json"
-        assert config.ai.enabled is True
-        assert config.ai.api_key == "yaml_key"
-        assert config.ai.language == "en"
         # Check defaults are preserved for missing fields
         assert config.upload.privacy_status == "private"
 

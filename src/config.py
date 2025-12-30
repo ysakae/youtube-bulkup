@@ -24,18 +24,11 @@ class UploadConfig(BaseModel):
     privacy_status: str = "private"
 
 
-class AIConfig(BaseModel):
-    enabled: bool = False
-    api_key: Optional[str] = None
-    api_key: Optional[str] = None
-    model: str = "models/gemini-3-flash-preview"
-    language: str = "ja"
 
 
 class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     upload: UploadConfig = Field(default_factory=UploadConfig)
-    ai: AIConfig = Field(default_factory=AIConfig)
     history_db: str = "upload_history.json"
 
     @classmethod

@@ -15,12 +15,6 @@ upload:
   retry_count: 5
   privacy_status: "private"  # private, public, unlisted
 
-# AI Metadata settings (Optional)
-ai:
-  enabled: true
-  api_key: ""  # GEMINI_API_KEY env var is preferred
-  model: "models/gemini-3-flash-preview"
-  language: "ja"
 
 # Database path
 history_db: "upload_history.json"

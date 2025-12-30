@@ -33,7 +33,7 @@ class TestMain:
 
         mocker.patch("src.main.VideoUploader")
         mocker.patch("src.main.HistoryManager")
-        mocker.patch("src.main.MetadataGenerator")
+        mocker.patch("src.main.FileMetadataGenerator")
         mocker.patch("src.main.scan_directory", return_value=[])
 
         return mock_auth
@@ -71,12 +71,17 @@ class TestMain:
         mock_hist.is_uploaded.return_value = False
         mocker.patch("src.main.HistoryManager", return_value=mock_hist)
 
-        # Mock AI
-        mock_ai = MagicMock()
-        mock_ai.generate_metadata = AsyncMock(
-            return_value={"title": "AI Title", "description": "AI Desc", "tags": []}
+        # Mock Metadata logic
+        mock_meta = MagicMock()
+        mock_meta.generate = MagicMock(
+            return_value={
+                "title": "File Title", 
+                "description": "File Desc", 
+                "tags": [],
+                "recordingDetails": {}
+            }
         )
-        mocker.patch("src.main.MetadataGenerator", return_value=mock_ai)
+        mocker.patch("src.main.FileMetadataGenerator", return_value=mock_meta)
 
         # Mock orchestrator to avoid actual async loop issues in CliRunner if not careful,
         # but main.py calls asyncio.run(), so catching it there via mocking the internal parts is better.
@@ -90,7 +95,7 @@ class TestMain:
         assert result.exit_code == 0
         assert "Found 1 video files" in result.stdout
         # output is rich, so might be formatted. check key phrases.
-        assert "AI Title" in result.stdout
+        assert "File Title" in result.stdout
 
     def test_upload_real_run(self, mocker, tmp_path):
         """Test upload command with real upload (mocked)."""
@@ -106,11 +111,11 @@ class TestMain:
         mock_hist.is_uploaded.return_value = False
         mocker.patch("src.main.HistoryManager", return_value=mock_hist)
 
-        mock_ai = MagicMock()
-        mock_ai.generate_metadata = AsyncMock(
-            return_value={"title": "Title", "tags": []}
+        mock_meta = MagicMock()
+        mock_meta.generate = MagicMock(
+            return_value={"title": "Title", "tags": [], "recordingDetails": {}}
         )
-        mocker.patch("src.main.MetadataGenerator", return_value=mock_ai)
+        mocker.patch("src.main.FileMetadataGenerator", return_value=mock_meta)
 
         mock_uploader = MagicMock()
         mock_uploader.upload_video = AsyncMock(return_value="new_vid_123")

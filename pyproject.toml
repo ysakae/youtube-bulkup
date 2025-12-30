@@ -1,7 +1,7 @@
 [project]
 name = "youtube-up-agy"
 version = "0.1.0"
-description = "Efficient YouTube Bulk Uploader with AI Metadata Generation"
+description = "Efficient YouTube Bulk Uploader with Automated Metadata Extraction"
 authors = [
     {name = "Antigravity", email = "antigravity@google.com"},
 ]
@@ -16,10 +16,10 @@ dependencies = [
     "google-auth>=2.26.0",
     "tenacity>=8.2.3",
     "xxhash>=3.4.1",
-    "google-genai>=0.3.0",
     "tinydb>=4.8.0",
     "python-dotenv>=1.0.0",
     "python-dotenv>=1.0.0",
+    "hachoir>=3.1.2",
 ]
 
 [project.optional-dependencies]
