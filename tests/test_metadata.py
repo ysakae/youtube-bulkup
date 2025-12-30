@@ -54,3 +54,40 @@ class TestFileMetadataGenerator:
         assert "Folder" in result["tags"]
         # recordingDate should not be present
         assert "recordingDate" not in result["recordingDetails"]
+
+    @patch("src.metadata.createParser")
+    @patch("src.metadata.extractMetadata")
+    def test_generate_with_gps(self, mock_extract, mock_parser, generator):
+        """Test metadata generation when GPS data is found."""
+        # Setup Mocks
+        file_path = Path("/path/to/EVENT_NAME/video.mp4")
+        
+        mock_meta = MagicMock()
+        
+        # Mocking .has() behavior for GPS
+        def has_side_effect(key):
+            return key in ["creation_date", "latitude", "longitude", "altitude"]
+        mock_meta.has.side_effect = has_side_effect
+        
+        # Mocking .get() behavior
+        def get_side_effect(key):
+            data = {
+                "creation_date": datetime(2023, 1, 1, 12, 0, 0),
+                "latitude": 35.6895,
+                "longitude": 139.6917,
+                "altitude": 10.5
+            }
+            return data.get(key)
+        mock_meta.get.side_effect = get_side_effect
+        
+        mock_extract.return_value = mock_meta
+
+        # Execute
+        result = generator.generate(file_path, index=1, total=1)
+
+        # Verify
+        rec_details = result["recordingDetails"]
+        assert "location" in rec_details
+        assert rec_details["location"]["latitude"] == 35.6895
+        assert rec_details["location"]["longitude"] == 139.6917
+        assert rec_details["location"]["altitude"] == 10.5

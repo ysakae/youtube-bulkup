@@ -58,6 +58,7 @@ YouTube 上で「撮影日」として表示されるフィールドを設定し
 - **取得元**: ファイル内部のメタデータ（`hachoir` ライブラリを使用し、`creation_date` を解析）。
 - **API フィールド**: `recordingDetails.recordingDate`
 - **フォーマット**: `YYYY-MM-DDThh:mm:ss.sZ` (ISO 8601 UTC)
+- **場所 (Location)**: ファイルからGPS情報（緯度・経度・高度）が取得可能な場合、`recordingDetails.location` に設定されます。
 - **注意**: ファイルメタデータが存在しない、または解析不能な場合は設定されません。
 
 ## 3. 実装詳細
