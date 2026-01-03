@@ -26,7 +26,8 @@ class HistoryManager:
         self, file_path: str, file_hash: str, video_id: str, metadata: Dict[str, Any]
     ):
         """Record a successful upload."""
-        self.table.insert(
+        File = Query()
+        self.table.upsert(
             {
                 "file_path": str(file_path),
                 "file_hash": file_hash,
@@ -34,9 +35,28 @@ class HistoryManager:
                 "metadata": metadata,
                 "timestamp": time.time(),
                 "status": "success",
-            }
+                "error": None,
+            },
+            File.file_hash == file_hash,
         )
         logger.info(f"Recorded upload history for {file_path}")
+
+    def add_failure(self, file_path: str, file_hash: str, error_msg: str):
+        """Record a failed upload."""
+        File = Query()
+        self.table.upsert(
+            {
+                "file_path": str(file_path),
+                "file_hash": file_hash,
+                "video_id": None,
+                "metadata": {},
+                "timestamp": time.time(),
+                "status": "failed",
+                "error": str(error_msg),
+            },
+            File.file_hash == file_hash,
+        )
+        logger.warning(f"Recorded upload failure for {file_path}")
 
     def get_upload_count(self) -> int:
         return len(self.table)
@@ -49,3 +69,8 @@ class HistoryManager:
         if limit and limit > 0:
             return records[:limit]
         return records
+
+    def get_failed_records(self) -> list:
+        """Get all failed upload records."""
+        File = Query()
+        return self.table.search(File.status == "failed")

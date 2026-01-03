@@ -2,6 +2,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import List
 
 import typer
 from googleapiclient.errors import HttpError
@@ -197,8 +198,58 @@ def upload(
     )
 
 
-async def orchestrate_upload(
-    directory: str,
+@app.command()
+def retry(
+    workers: int = typer.Option(
+        1, help="Number of concurrent uploads (careful with quota!)"
+    ),
+):
+    """
+    Retry uploading failed files.
+    """
+    setup_logging(level="INFO")
+
+    history = HistoryManager()
+    failed_records = history.get_failed_records()
+
+    if not failed_records:
+        console.print("[green]No failed uploads found.[/]")
+        return
+
+    console.print(f"[bold]Found {len(failed_records)} failed uploads.[/]")
+
+    # Verify if files exist
+    files_to_retry = []
+    for record in failed_records:
+        file_path = Path(record["file_path"])
+        if file_path.exists():
+            files_to_retry.append(file_path)
+        else:
+            console.print(f"[yellow]File missing: {file_path}[/]")
+
+    if not files_to_retry:
+        console.print("[yellow]No valid files to retry.[/]")
+        return
+
+    # Auth
+    try:
+        service = get_authenticated_service()
+    except Exception as e:
+        console.print(f"[bold red]Auth Error:[/] {e}")
+        raise typer.Exit(code=1)
+
+    uploader = VideoUploader(service)
+    meta_gen = FileMetadataGenerator()
+
+    asyncio.run(
+        process_video_files(
+            files_to_retry, uploader, history, meta_gen, dry_run=False, workers=workers
+        )
+    )
+
+
+async def process_video_files(
+    video_files: List[Path],
     uploader: VideoUploader,
     history: HistoryManager,
     metadata_gen: FileMetadataGenerator,
@@ -206,17 +257,13 @@ async def orchestrate_upload(
     workers: int,
 ):
     """
-    Core async logic for processing video files.
+    Process a list of video files: Deduplicate, Metadata, Upload.
     """
-    # 2. Scan Files
-    console.print(f"[bold]Scanning {directory}...[/]")
-    video_files = list(scan_directory(directory))
-    console.print(f"Found [cyan]{len(video_files)}[/] video files.")
-
     if not video_files:
+        console.print("[yellow]No files to process.[/]")
         return
 
-    # 3. Setup Progress Dashboard
+    # Setup Progress Dashboard
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -235,6 +282,7 @@ async def orchestrate_upload(
         async def process_file(file_path: Path, index: int, total_files: int):
             async with sem:
                 task_id = progress.add_task(f"Processing {file_path.name}", total=None)
+                file_hash = "unknown"
 
                 try:
                     # Deduplication
@@ -295,19 +343,20 @@ async def orchestrate_upload(
                         progress.console.print(
                             f"[bold red]Error processing {file_path.name}: No YouTube channel found.[/]"
                         )
-                        progress.console.print(
-                            "Please create a channel associated with this account."
-                        )
                     else:
                         progress.console.print(
                             f"[bold red]API Error processing {file_path.name}: {e}[/]"
                         )
                     logger.error(f"API Error processing {file_path.name}: {e}")
+                    if file_hash != "unknown":
+                        history.add_failure(str(file_path), file_hash, str(e))
                 except Exception as e:
                     progress.console.print(
                         f"[bold red]Error processing {file_path.name}: {e}[/]"
                     )
                     logger.exception(f"Error processing {file_path.name}")
+                    if file_hash != "unknown":
+                        history.add_failure(str(file_path), file_hash, str(e))
                 finally:
                     progress.update(task_id, visible=False)
                     progress.advance(overall_task)
@@ -320,6 +369,30 @@ async def orchestrate_upload(
 
         # Batch processing
         await asyncio.gather(*tasks)
+
+
+async def orchestrate_upload(
+    directory: str,
+    uploader: VideoUploader,
+    history: HistoryManager,
+    metadata_gen: FileMetadataGenerator,
+    dry_run: bool,
+    workers: int,
+):
+    """
+    Core async logic for processing video files.
+    """
+    # 2. Scan Files
+    console.print(f"[bold]Scanning {directory}...[/]")
+    video_files = list(scan_directory(directory))
+    console.print(f"Found [cyan]{len(video_files)}[/] video files.")
+
+    if not video_files:
+        return
+
+    await process_video_files(
+        video_files, uploader, history, metadata_gen, dry_run, workers
+    )
 
 
 if __name__ == "__main__":
