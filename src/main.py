@@ -276,10 +276,26 @@ async def process_video_files(
             "[bold green]Overall Progress", total=len(video_files)
         )
 
+        # Pre-calculate per-folder indices
+        # Map: file_path -> (index, total)
+        folder_map = {}
+        from collections import defaultdict
+        files_by_folder = defaultdict(list)
+        
+        for f in video_files:
+            files_by_folder[f.parent].append(f)
+            
+        for folder, files in files_by_folder.items():
+            # Sort files by name to ensure consistent ordering
+            files.sort(key=lambda x: x.name)
+            total_in_folder = len(files)
+            for i, f in enumerate(files, start=1):
+                folder_map[f] = (i, total_in_folder)
+
         # Semaphore for concurrency
         sem = asyncio.Semaphore(workers)
 
-        async def process_file(file_path: Path, index: int, total_files: int):
+        async def process_file(file_path: Path):
             async with sem:
                 task_id = progress.add_task(f"Processing {file_path.name}", total=None)
                 file_hash = "unknown"
@@ -300,7 +316,9 @@ async def process_video_files(
                         return
 
                     # Metadata
-                    metadata = metadata_gen.generate(file_path, index, total_files)
+                    # Get per-folder index/total
+                    idx, tot = folder_map.get(file_path, (0, 0))
+                    metadata = metadata_gen.generate(file_path, idx, tot)
 
                     if dry_run:
                         progress.console.print(
@@ -361,11 +379,10 @@ async def process_video_files(
                     progress.update(task_id, visible=False)
                     progress.advance(overall_task)
 
-        # Prepare tasks with index
-        total_files = len(video_files)
+        # Prepare tasks
         tasks = []
-        for i, f in enumerate(video_files, start=1):
-            tasks.append(process_file(f, i, total_files))
+        for f in video_files:
+            tasks.append(process_file(f))
 
         # Batch processing
         await asyncio.gather(*tasks)
