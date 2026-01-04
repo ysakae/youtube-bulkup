@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 from typing import List
 
-from .config import config
+from ..core.config import config
 
 TOKENS_DIR = Path("tokens")
 ACTIVE_PROFILE_FILE = Path(".active_profile")

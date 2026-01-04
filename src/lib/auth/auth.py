@@ -6,7 +6,7 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import Resource, build
 
-from .config import config
+from ..core.config import config
 from .profiles import (
     ensure_tokens_dir,
     get_active_profile,

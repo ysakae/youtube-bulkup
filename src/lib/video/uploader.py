@@ -14,7 +14,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .config import config
+from ..core.config import config
 
 logger = logging.getLogger("youtube_up")
 

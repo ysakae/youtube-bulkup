@@ -1,6 +1,6 @@
 import pytest
 
-from src.scanner import calculate_hash, is_video_file, scan_directory
+from src.lib.video.scanner import calculate_hash, is_video_file, scan_directory
 
 
 class TestScanner:

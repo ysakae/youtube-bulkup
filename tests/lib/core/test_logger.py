@@ -1,4 +1,4 @@
-from src.logger import setup_logging
+from src.lib.core.logger import setup_logging
 
 
 def test_setup_logging(mocker):

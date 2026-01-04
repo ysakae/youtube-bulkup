@@ -3,15 +3,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from datetime import datetime
 
-from src.metadata import FileMetadataGenerator
+from src.lib.video.metadata import FileMetadataGenerator
 
 class TestFileMetadataGenerator:
     @pytest.fixture
     def generator(self):
         return FileMetadataGenerator()
 
-    @patch("src.metadata.createParser")
-    @patch("src.metadata.extractMetadata")
+    @patch("src.lib.video.metadata.createParser")
+    @patch("src.lib.video.metadata.extractMetadata")
     def test_generate_with_date(self, mock_extract, mock_parser, generator):
         """Test metadata generation when creation date is found."""
         # Setup Mocks
@@ -36,7 +36,7 @@ class TestFileMetadataGenerator:
         assert "2023" in result["tags"]
         assert result["recordingDetails"]["recordingDate"] == "2023-01-01T12:00:00Z"
 
-    @patch("src.metadata.createParser")
+    @patch("src.lib.video.metadata.createParser")
     def test_generate_no_metadata(self, mock_parser, generator):
         """Test fallback when no metadata can be extracted."""
         # Setup Mocks to fail parsing
@@ -55,8 +55,8 @@ class TestFileMetadataGenerator:
         # recordingDate should not be present
         assert "recordingDate" not in result["recordingDetails"]
 
-    @patch("src.metadata.createParser")
-    @patch("src.metadata.extractMetadata")
+    @patch("src.lib.video.metadata.createParser")
+    @patch("src.lib.video.metadata.extractMetadata")
     def test_generate_with_gps(self, mock_extract, mock_parser, generator):
         """Test metadata generation when GPS data is found."""
         # Setup Mocks
@@ -92,7 +92,7 @@ class TestFileMetadataGenerator:
         assert rec_details["location"]["longitude"] == 139.6917
         assert rec_details["location"]["altitude"] == 10.5
 
-    @patch("src.metadata.createParser")
+    @patch("src.lib.video.metadata.createParser")
     @patch("builtins.open", new_callable=MagicMock)
     def test_generate_fallback_binary_scan(self, mock_file, mock_parser, generator):
         """Test fallback GPS extraction from binary when hachoir fails."""
@@ -121,7 +121,7 @@ class TestFileMetadataGenerator:
         # Altitude was not in our mock string (optional)
         assert "altitude" not in rec_details["location"]
 
-    @patch("src.metadata.createParser")
+    @patch("src.lib.video.metadata.createParser")
     @patch("builtins.open", new_callable=MagicMock)
     def test_generate_fallback_binary_scan_tail(self, mock_file, mock_parser, generator):
         """Test fallback GPS extraction from binary tail (large file)."""
