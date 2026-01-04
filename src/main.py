@@ -143,8 +143,22 @@ def history(
     # setup_logging() # Optional, maybe not needed for just reading DB
     history_manager = HistoryManager()
     # Always fetch all to filter manually
-    records = history_manager.get_all_records(limit=0)
+    all_records = history_manager.get_all_records(limit=0)
+    
+    # Calculate stats
+    total = len(all_records)
+    failed = len([r for r in all_records if r.get("status") == "failed"])
+    success = len([r for r in all_records if r.get("status", "success") == "success"])
+    
+    console.print(
+        Panel(
+            f"[bold]Total: {total}[/] | [green]Success: {success}[/] | [red]Failed: {failed}[/]",
+            title="Summary",
+            expand=False
+        )
+    )
 
+    records = all_records
     if status:
         records = [r for r in records if r.get("status", "success") == status]
 
@@ -152,7 +166,7 @@ def history(
         records = records[:limit]
 
     if not records:
-        console.print("[yellow]No upload history found.[/]")
+        console.print("[yellow]No upload history found (matching filter).[/]")
         return
 
     table = Table(title="Upload History")
