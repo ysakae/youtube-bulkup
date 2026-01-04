@@ -53,17 +53,19 @@ graph TD
     
     Uploader -->|結果記録| History["src/history.py"]
     History --> HistoryFile[upload_history.json]
+    Uploader -->|結果記録| History["src/history.py"]
+    History --> HistoryFile[upload_history.json]
 ```
 
 ## 4. 主要コンポーネント詳細
 
 ### 4.1 CLI エントリーポイント (`src.main`)
 - `typer` を使用してコマンド引数の解析を行います。
-- `auth`, `upload` などのサブコマンドを定義し、各モジュールをオーケストレーションします。
+- `auth`, `upload`, `reupload` などのサブコマンドをオーケストレーションします。
 
 ### 4.2 認証モジュール (`src.auth`)
 - `google-auth-oauthlib` を使用して OAuth 2.0 フローを処理します。
-- 取得したトークンは `tokens/` ディレクトリ配下に保存され、再利用されます。
+- 複数プロファイル管理に対応しており、`tokens/` ディレクトリ配下にプロファイルごとのトークンを保存します。
 
 ### 4.3 スキャナー (`src.scanner`)
 - 指定されたディレクトリを再帰的（または非再帰的）に走査し、アップロード対象の動画ファイルをリストアップします。
@@ -78,3 +80,8 @@ graph TD
 - YouTube Data API v3 の `videos.insert` メソッドをラップしています。
 - `googleapiclient.http.MediaFileUpload` を使用して、再開可能なアップロード（Resumable Upload）を実装しています。
 - ネットワークエラー時の指数バックオフによるリトライ処理 (`tenacity` 利用) を行います。
+
+### 4.6 履歴管理 (`src.history`)
+- `tinydb` を利用して `upload_history.json` にアップロード結果を記録します。
+- **重複排除**: ファイルのハッシュ値を用いて、既にアップロード済みのファイルを検出・スキップします。
+- **再アップロード**: ファイルハッシュやYouTube Video IDを用いた履歴検索により、特定のファイルの履歴削除や再アップロードをサポートします。

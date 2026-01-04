@@ -76,12 +76,14 @@ upload:
 
 ## 使い方
 
-### 1. 認証 (初回のみ)
-YouTubeアカウントとの連携を行います。
+### 1. 認証 (Authentication)
+YouTubeアカウントとの連携・管理を行います。
 ```bash
-yt-up auth
-# または
-python -m src.main auth
+yt-up auth login    # ログイン (新規プロファイル作成)
+yt-up auth status   # 現在の認証状態を確認
+yt-up auth list     # 保存されているプロファイル一覧
+yt-up auth switch [NAME] # プロファイルの切り替え
+yt-up auth logout   # ログアウト (トークン削除)
 ```
 
 ### 2. ドライラン (動作確認)
@@ -95,6 +97,24 @@ yt-up upload ./my_videos --dry-run
 yt-up upload ./my_videos --workers 2
 ```
 - `--workers`: 並行アップロード数（YouTube APIのクォータにご注意ください）。
+
+### 4. 再アップロード (Re-upload)
+アップロードに失敗したファイルや、特定のファイルを再アップロードします。
+履歴をクリアして強制的にアップロードを試みます。
+
+```bash
+# ファイルパス指定
+yt-up reupload ./my_videos/video.mp4
+
+# ファイルハッシュ指定（元ファイルが移動していても履歴から特定可能）
+yt-up reupload --hash <FILE_HASH>
+
+# 動画ID指定（YouTube Video IDから履歴を検索）
+yt-up reupload --video-id <VIDEO_ID>
+
+# ドライラン（履歴削除を行わずにシミュレーション）
+yt-up reupload ./my_videos/video.mp4 --dry-run
+```
 
 ## Quota (API割り当て) について
 
