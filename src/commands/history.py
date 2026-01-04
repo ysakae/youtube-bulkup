@@ -62,11 +62,21 @@ def history(
             datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "N/A"
         )
         status = r.get("status", "success")
-        path = Path(r.get("file_path", "")).name
+        full_path = r.get("file_path", "")
+        file_name = Path(full_path).name if full_path else "N/A"
+        
+        # Create clickable link for file path
+        if full_path:
+            # rich link syntax: [link=uri]text[/link]
+            # Must convert to absolute URI for file:// to work reliably
+            uri = Path(full_path).resolve().as_uri()
+            path_display = f"[link={uri}]{file_name}[/link]"
+        else:
+            path_display = "N/A"
         
         if status == "failed":
             status_str = "[red]Failed[/]"
-            title = path
+            title = file_name
             vid = r.get("error", "Unknown Error")
             # Truncate long error messages
             if len(vid) > 40:
@@ -78,6 +88,6 @@ def history(
             vid_col = f"[link=https://youtu.be/{vid}]{vid}[/link]" if vid != "N/A" else "N/A"
             title = r.get("metadata", {}).get("title", "N/A")
 
-        table.add_row(date_str, status_str, title, vid_col, path)
+        table.add_row(date_str, status_str, title, vid_col, path_display)
 
     console.print(table)
