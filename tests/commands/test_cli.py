@@ -12,40 +12,77 @@ runner = CliRunner()
 
 @pytest.fixture
 def mock_dependencies():
-    with patch("src.main.get_authenticated_service") as mock_auth, \
-         patch("src.main.VideoUploader") as mock_uploader_cls, \
-         patch("src.main.HistoryManager") as mock_history_cls, \
-         patch("src.main.FileMetadataGenerator") as mock_meta_cls, \
-         patch("src.main.calculate_hash", return_value="dummy_hash"), \
-         patch("src.main.scan_directory") as mock_scan:
-             
-        mock_auth.return_value = MagicMock()
-        mock_uploader = mock_uploader_cls.return_value
+    # We need to patch dependencies in all modules where they are imported
+    with patch("src.commands.auth.get_authenticated_service") as m_auth_auth, \
+         patch("src.commands.upload.get_authenticated_service") as m_auth_upload, \
+         patch("src.commands.reupload.get_authenticated_service") as m_auth_reupload, \
+         patch("src.commands.retry.get_authenticated_service") as m_auth_retry, \
+         \
+         patch("src.commands.upload.VideoUploader") as m_upl_upload, \
+         patch("src.commands.reupload.VideoUploader") as m_upl_reupload, \
+         patch("src.commands.retry.VideoUploader") as m_upl_retry, \
+         \
+         patch("src.commands.history.HistoryManager") as m_hist_history, \
+         patch("src.commands.upload.HistoryManager") as m_hist_upload, \
+         patch("src.commands.reupload.HistoryManager") as m_hist_reupload, \
+         patch("src.commands.retry.HistoryManager") as m_hist_retry, \
+         \
+         patch("src.commands.upload.FileMetadataGenerator") as m_meta_upload, \
+         patch("src.commands.reupload.FileMetadataGenerator") as m_meta_reupload, \
+         patch("src.commands.retry.FileMetadataGenerator") as m_meta_retry, \
+         \
+         patch("src.services.upload_manager.calculate_hash", return_value="dummy_hash") as m_hash_manager, \
+         patch("src.commands.reupload.calculate_hash", return_value="dummy_hash") as m_hash_reupload, \
+         patch("src.services.upload_manager.scan_directory") as mock_scan:
+
+        # Setup shared mock objects
+        mock_auth_obj = MagicMock()
+        m_auth_auth.return_value = mock_auth_obj
+        m_auth_upload.return_value = mock_auth_obj
+        m_auth_reupload.return_value = mock_auth_obj
+        m_auth_retry.return_value = mock_auth_obj
+
+        # Uploader Setup
+        # We start with one mock class and reuse its return value
+        mock_uploader_instance = MagicMock()
         
-        # Correctly mock async method to return completed future
         def create_future(*args, **kwargs):
             f = asyncio.Future()
             f.set_result("vid_123")
             return f
-            
-        mock_uploader.upload_video = MagicMock(side_effect=create_future)
+        mock_uploader_instance.upload_video = MagicMock(side_effect=create_future)
+
+        m_upl_upload.return_value = mock_uploader_instance
+        m_upl_reupload.return_value = mock_uploader_instance
+        m_upl_retry.return_value = mock_uploader_instance
+
+        # History Setup
+        mock_history_instance = MagicMock()
+        mock_history_instance.is_uploaded.return_value = False
+        mock_history_instance.delete_record.return_value = True
         
-        mock_history = mock_history_cls.return_value
-        # Default: not uploaded
-        mock_history.is_uploaded.return_value = False
-        mock_history.delete_record.return_value = True
-        
-        mock_meta = mock_meta_cls.return_value
-        mock_meta.generate.return_value = {
+        m_hist_history.return_value = mock_history_instance
+        m_hist_upload.return_value = mock_history_instance
+        m_hist_reupload.return_value = mock_history_instance
+        m_hist_retry.return_value = mock_history_instance
+
+        # Metadata Setup
+        mock_meta_instance = MagicMock()
+        mock_meta_instance.generate.return_value = {
             "title": "Test Title",
             "description": "Desc",
             "tags": []
         }
-        
+        m_meta_upload.return_value = mock_meta_instance
+        m_meta_reupload.return_value = mock_meta_instance
+        m_meta_retry.return_value = mock_meta_instance
+
         yield {
-            "auth": mock_auth,
-            "uploader": mock_uploader,
-            "history": mock_history,
+            "auth": m_auth_auth,
+            "auth_upload": m_auth_upload,
+            "auth_reupload": m_auth_reupload,
+            "uploader": mock_uploader_instance,
+            "history": mock_history_instance,
             "scan": mock_scan,
         }
 
@@ -54,20 +91,20 @@ def test_upload_command_dry_run(mock_dependencies):
     # Setup mock paths for scan
     path1 = MagicMock()
     path1.__str__.return_value = "/tmp/videos/test.mp4"
-    path1.resolve.return_value = Path("/tmp/videos/test.mp4") # For print output
+    path1.resolve.return_value = Path("/tmp/videos/test.mp4")
     path1.name = "test.mp4"
     path1.stat.return_value.st_size = 1000
     
     mock_dependencies["scan"].return_value = [path1]
     
-    with patch("src.main.process_video_files") as mock_process:
+    # process_video_files is now in src.services.upload_manager
+    with patch("src.commands.upload.orchestrate_upload") as mock_orch:
+        # Note: upload command calls orchestrate_upload directly now
         result = runner.invoke(app, ["upload", "/tmp/videos", "--dry-run"])
         assert result.exit_code == 0
-        # If mocked process_video_files, scan_directory might not be called if we mock it?
-        # Wait, upload command calls scan_directory then process_video_files.
-        # But here we mocked scan_directory.
         
-    # Real dry run flow (verify scan message and dry run process call)
+    # Real dry run flow
+    # mock scan is already active from fixture
     result = runner.invoke(app, ["upload", "/tmp/videos", "--dry-run"])
     assert result.exit_code == 0
     assert "Scanning /tmp/videos..." in result.stdout
@@ -132,7 +169,7 @@ def test_retry_command(mock_dependencies):
 
 
 def test_history_command():
-    with patch("src.main.HistoryManager") as mock_hist_cls:
+    with patch("src.commands.history.HistoryManager") as mock_hist_cls:
         mock_hist = mock_hist_cls.return_value
         mock_hist.get_all_records.return_value = [
             {"timestamp": 1234567890, "status": "success", "file_path": "test.mp4", "video_id": "vid1"},
@@ -146,8 +183,8 @@ def test_history_command():
 
 
 def test_auth_status_command():
-    with patch("src.main.get_active_profile", return_value="default"), \
-         patch("src.main.get_authenticated_service") as mock_service:
+    with patch("src.commands.auth.get_active_profile", return_value="default"), \
+         patch("src.commands.auth.get_authenticated_service") as mock_service:
         
         mock_service.return_value.channels().list().execute.return_value = {
             "items": [{"snippet": {"title": "My Channel", "customUrl": "@mychan"}}]
@@ -160,8 +197,8 @@ def test_auth_status_command():
 
 
 def test_auth_login_command():
-    with patch("src.main.authenticate_new_profile") as mock_auth, \
-         patch("src.main.show_status"): 
+    with patch("src.commands.auth.authenticate_new_profile") as mock_auth, \
+         patch("src.commands.auth.show_status"): 
         
         result = runner.invoke(app, ["auth", "login", "new_user"])
         assert result.exit_code == 0
@@ -170,9 +207,9 @@ def test_auth_login_command():
 
 
 def test_auth_switch_command():
-    with patch("src.main.list_profiles", return_value=["default", "user2"]), \
-         patch("src.main.set_active_profile") as mock_set, \
-         patch("src.main.show_status"):
+    with patch("src.commands.auth.list_profiles", return_value=["default", "user2"]), \
+         patch("src.commands.auth.set_active_profile") as mock_set, \
+         patch("src.commands.auth.show_status"):
              
         result = runner.invoke(app, ["auth", "switch", "user2"])
         assert result.exit_code == 0
@@ -186,8 +223,8 @@ def test_auth_switch_command():
 
 
 def test_auth_list_command():
-    with patch("src.main.list_profiles", return_value=["default", "user2"]), \
-         patch("src.main.get_active_profile", return_value="default"):
+    with patch("src.commands.auth.list_profiles", return_value=["default", "user2"]), \
+         patch("src.commands.auth.get_active_profile", return_value="default"):
              
         result = runner.invoke(app, ["auth", "list"])
         assert result.exit_code == 0
@@ -196,7 +233,7 @@ def test_auth_list_command():
 
 
 def test_auth_logout_command():
-    with patch("src.main.logout", return_value=True) as mock_logout:
+    with patch("src.commands.auth.logout", return_value=True) as mock_logout:
         result = runner.invoke(app, ["auth", "logout", "user2"])
         assert result.exit_code == 0
         mock_logout.assert_called_with("user2")
@@ -286,8 +323,9 @@ def test_reupload_auth_error(mock_dependencies):
     with patch("pathlib.Path.exists", return_value=True), \
          patch("pathlib.Path.resolve", return_value=Path("/abs/path/test.mp4")):
              
-        # Simulate Auth Error
-        mock_dependencies["auth"].side_effect = Exception("Auth Failed")
+        # Mock get_authenticated_service to raise exception
+        # mock_dependencies["auth_reupload"] is the mock object for get_authenticated_service in reupload
+        mock_dependencies["auth_reupload"].side_effect = Exception("Auth Failed")
         
         result = runner.invoke(app, ["reupload", "test.mp4"])
         assert result.exit_code == 1
@@ -296,10 +334,8 @@ def test_reupload_auth_error(mock_dependencies):
 
 def test_upload_auth_error(mock_dependencies):
     # Simulate Auth Error during upload command start
-    mock_dependencies["auth"].side_effect = Exception("Auth Failed")
+    mock_dependencies["auth_upload"].side_effect = Exception("Auth Failed")
     
     result = runner.invoke(app, ["upload", "/tmp/videos"])
     assert result.exit_code == 1
     assert "Auth Failed" in result.stdout
-
-

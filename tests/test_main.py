@@ -13,8 +13,8 @@ class TestMain:
     @pytest.fixture
     def mock_deps(self, mocker):
         """Mock all external dependencies for main.py."""
-        mocker.patch("src.main.setup_logging")
-        mock_auth = mocker.patch("src.main.get_authenticated_service")
+        mocker.patch("src.lib.core.logger.setup_logging")
+        
         # Mock service for auth check
         mock_service = MagicMock()
         mock_channels = MagicMock()
@@ -29,18 +29,20 @@ class TestMain:
                 }
             ]
         }
+        
+        mock_auth = mocker.patch("src.commands.auth.get_authenticated_service")
         mock_auth.return_value = mock_service
 
-        mocker.patch("src.main.VideoUploader")
-        mocker.patch("src.main.HistoryManager")
-        mocker.patch("src.main.FileMetadataGenerator")
-        mocker.patch("src.main.scan_directory", return_value=[])
+        mocker.patch("src.commands.upload.VideoUploader")
+        mocker.patch("src.commands.upload.HistoryManager")
+        mocker.patch("src.commands.upload.FileMetadataGenerator")
+        mocker.patch("src.services.upload_manager.scan_directory", return_value=[])
 
         return mock_auth
 
     def test_auth_status(self, mock_deps, mocker):
         """Test auth status (default)."""
-        mocker.patch("src.main.get_active_profile", return_value="default")
+        mocker.patch("src.commands.auth.get_active_profile", return_value="default")
         
         result = runner.invoke(app, ["auth"])
         
@@ -50,8 +52,8 @@ class TestMain:
 
     def test_auth_list(self, mock_deps, mocker):
         """Test auth list command."""
-        mocker.patch("src.main.list_profiles", return_value=["default", "other"])
-        mocker.patch("src.main.get_active_profile", return_value="default")
+        mocker.patch("src.commands.auth.list_profiles", return_value=["default", "other"])
+        mocker.patch("src.commands.auth.get_active_profile", return_value="default")
         
         result = runner.invoke(app, ["auth", "list"])
         
@@ -62,14 +64,14 @@ class TestMain:
 
     def test_upload_dry_run(self, mocker):
         """Test upload command in dry-run mode."""
-        mocker.patch("src.main.setup_logging")
-        mocker.patch("src.main.scan_directory", return_value=[Path("video.mp4")])
-        mocker.patch("src.main.calculate_hash", return_value="hash123")
+        mocker.patch("src.lib.core.logger.setup_logging")
+        mocker.patch("src.services.upload_manager.scan_directory", return_value=[Path("video.mp4")])
+        mocker.patch("src.services.upload_manager.calculate_hash", return_value="hash123")
 
         # Mock History
         mock_hist = MagicMock()
         mock_hist.is_uploaded.return_value = False
-        mocker.patch("src.main.HistoryManager", return_value=mock_hist)
+        mocker.patch("src.commands.upload.HistoryManager", return_value=mock_hist)
 
         # Mock Metadata logic
         mock_meta = MagicMock()
@@ -81,7 +83,7 @@ class TestMain:
                 "recordingDetails": {}
             }
         )
-        mocker.patch("src.main.FileMetadataGenerator", return_value=mock_meta)
+        mocker.patch("src.commands.upload.FileMetadataGenerator", return_value=mock_meta)
 
         # Mock orchestrator to avoid actual async loop issues in CliRunner if not careful,
         # but main.py calls asyncio.run(), so catching it there via mocking the internal parts is better.
@@ -102,24 +104,24 @@ class TestMain:
         video_file = tmp_path / "video.mp4"
         video_file.touch()
 
-        mocker.patch("src.main.setup_logging")
-        mocker.patch("src.main.get_authenticated_service")  # Mock auth
-        mocker.patch("src.main.scan_directory", return_value=[video_file])
-        mocker.patch("src.main.calculate_hash", return_value="hash123")
+        mocker.patch("src.lib.core.logger.setup_logging")
+        mocker.patch("src.commands.upload.get_authenticated_service")  # Mock auth
+        mocker.patch("src.services.upload_manager.scan_directory", return_value=[video_file])
+        mocker.patch("src.services.upload_manager.calculate_hash", return_value="hash123")
 
         mock_hist = MagicMock()
         mock_hist.is_uploaded.return_value = False
-        mocker.patch("src.main.HistoryManager", return_value=mock_hist)
+        mocker.patch("src.commands.upload.HistoryManager", return_value=mock_hist)
 
         mock_meta = MagicMock()
         mock_meta.generate = MagicMock(
             return_value={"title": "Title", "tags": [], "recordingDetails": {}}
         )
-        mocker.patch("src.main.FileMetadataGenerator", return_value=mock_meta)
+        mocker.patch("src.commands.upload.FileMetadataGenerator", return_value=mock_meta)
 
         mock_uploader = MagicMock()
         mock_uploader.upload_video = AsyncMock(return_value="new_vid_123")
-        mocker.patch("src.main.VideoUploader", return_value=mock_uploader)
+        mocker.patch("src.commands.upload.VideoUploader", return_value=mock_uploader)
 
         result = runner.invoke(app, ["upload", "./test_dir"])
 

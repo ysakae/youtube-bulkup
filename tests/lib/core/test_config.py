@@ -1,4 +1,4 @@
-from src.config import AppConfig
+from src.lib.core.config import AppConfig
 
 
 class TestConfig:

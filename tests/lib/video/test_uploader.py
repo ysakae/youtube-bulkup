@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from googleapiclient.errors import HttpError
 
-from src.uploader import VideoUploader
+from src.lib.video.uploader import VideoUploader
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def uploader(mock_service):
 
 @pytest.fixture(autouse=True)
 def mock_media_file_upload():
-    with patch("src.uploader.MediaFileUpload") as mock:
+    with patch("src.lib.video.uploader.MediaFileUpload") as mock:
         yield mock
 
 
@@ -96,7 +96,7 @@ async def test_upload_video_unexpected_failure(uploader, mock_service):
 
 
 def test_should_retry_exception():
-    from src.uploader import should_retry_exception
+    from src.lib.video.uploader import should_retry_exception
     import socket
     
     assert should_retry_exception(socket.error()) is True

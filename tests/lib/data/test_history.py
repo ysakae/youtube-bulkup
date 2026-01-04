@@ -8,7 +8,7 @@ from typing import Generator
 import pytest
 from tinydb import TinyDB
 
-from src.history import HistoryManager
+from src.lib.data.history import HistoryManager
 
 
 @pytest.fixture

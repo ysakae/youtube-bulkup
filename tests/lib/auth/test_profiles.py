@@ -1,4 +1,4 @@
-from src.profiles import (
+from src.lib.auth.profiles import (
     DEFAULT_PROFILE,
     get_active_profile,
     get_profile_path,
@@ -12,8 +12,8 @@ class TestProfiles:
 
     def test_set_get_active_profile(self, tmp_path, mocker):
         # Patch constants to use tmp_path
-        mocker.patch("src.profiles.TOKENS_DIR", tmp_path / "tokens")
-        mocker.patch("src.profiles.ACTIVE_PROFILE_FILE", tmp_path / ".active_profile")
+        mocker.patch("src.lib.auth.profiles.TOKENS_DIR", tmp_path / "tokens")
+        mocker.patch("src.lib.auth.profiles.ACTIVE_PROFILE_FILE", tmp_path / ".active_profile")
         
         assert get_active_profile() == DEFAULT_PROFILE
         
@@ -26,7 +26,7 @@ class TestProfiles:
     def test_list_profiles(self, tmp_path, mocker):
         tokens_dir = tmp_path / "tokens"
         tokens_dir.mkdir()
-        mocker.patch("src.profiles.TOKENS_DIR", tokens_dir)
+        mocker.patch("src.lib.auth.profiles.TOKENS_DIR", tokens_dir)
         
         (tokens_dir / "user1.pickle").touch()
         (tokens_dir / "user2.pickle").touch()
@@ -37,14 +37,14 @@ class TestProfiles:
         assert len(profiles) == 2
 
     def test_get_profile_path(self, tmp_path, mocker):
-        mocker.patch("src.profiles.TOKENS_DIR", tmp_path / "tokens")
+        mocker.patch("src.lib.auth.profiles.TOKENS_DIR", tmp_path / "tokens")
         path = get_profile_path("test")
         assert path == tmp_path / "tokens" / "test.pickle"
 
     def test_delete_profile_token(self, tmp_path, mocker):
-        from src.profiles import delete_profile_token
+        from src.lib.auth.profiles import delete_profile_token
         
-        mocker.patch("src.profiles.TOKENS_DIR", tmp_path / "tokens")
+        mocker.patch("src.lib.auth.profiles.TOKENS_DIR", tmp_path / "tokens")
         token_path = tmp_path / "tokens" / "test.pickle"
         token_path.parent.mkdir()
         token_path.touch()
@@ -53,8 +53,8 @@ class TestProfiles:
         assert not token_path.exists()
         
     def test_delete_profile_token_not_exists(self, tmp_path, mocker):
-        from src.profiles import delete_profile_token
+        from src.lib.auth.profiles import delete_profile_token
         
-        mocker.patch("src.profiles.TOKENS_DIR", tmp_path / "tokens")
+        mocker.patch("src.lib.auth.profiles.TOKENS_DIR", tmp_path / "tokens")
         
         assert delete_profile_token("nonexistent") is False
