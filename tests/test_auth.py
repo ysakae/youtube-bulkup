@@ -1,67 +1,150 @@
-from unittest.mock import MagicMock
+import os
+import shutil
+import tempfile
+from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
+from pathlib import Path
 
-from src.auth import get_authenticated_service
-from src.config import config
+# Import the functions directly
+from src.auth import authenticate_new_profile, get_authenticated_service, logout
+from src.profiles import get_active_profile, list_profiles, set_active_profile
 
 
-class TestAuth:
-    @pytest.fixture
-    def mock_profiles(self, mocker):
-        mocker.patch("src.auth.migrate_legacy_token")
-        mocker.patch("src.auth.get_active_profile", return_value="default")
-        mocker.patch("src.auth.get_profile_path", return_value="tokens/default.pickle")
-        mocker.patch("src.auth.ensure_tokens_dir")
+@pytest.fixture
+def temp_tokens_dir():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        dir_path = Path(temp_dir)
+        # Patch paths in profiles.py with Path objects
+        with patch("src.profiles.TOKENS_DIR", dir_path), \
+             patch("src.profiles.ACTIVE_PROFILE_FILE", dir_path / ".active_profile"):
+            yield dir_path
 
-    def test_get_authenticated_service_success(self, mocker, mock_profiles):
-        """Test successful authentication."""
-        # Mock installedAppFlow
-        mock_flow = MagicMock()
-        mock_creds = MagicMock()
-        mock_flow.run_local_server.return_value = mock_creds
 
-        mock_from_client_secrets_file = mocker.patch(
-            "google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file",
-            return_value=mock_flow,
-        )
+def test_profiles_management(temp_tokens_dir):
+    # Initial state
+    assert get_active_profile() == "default"
+    assert list_profiles() == []
 
-        # Mock build at point of use
-        mock_build = mocker.patch("src.auth.build")
+    # Create dummy token files
+    (temp_tokens_dir / "default.pickle").touch()
+    (temp_tokens_dir / "user2.pickle").touch()
 
-        # Mock pickle to avoid writing mock to file
-        mocker.patch("src.auth.pickle")
-        mocker.patch("builtins.open", mocker.mock_open())  # Mock open as well
+    assert "default" in list_profiles()
+    assert "user2" in list_profiles()
 
-        # Mock config
-        mocker.patch.object(config.auth, "client_secrets_file", "secrets.json")
-        mocker.patch.object(config.auth, "scopes", ["scope1"])
+    set_active_profile("user2")
+    assert get_active_profile() == "user2"
 
-        # Mock checking paths
-        def exists_side_effect(path):
-            if "secrets.json" in str(path):
-                return True
-            return False
+    set_active_profile("default")
+    assert get_active_profile() == "default"
 
-        mocker.patch("os.path.exists", side_effect=exists_side_effect)
 
-        service = get_authenticated_service()
+@patch("src.auth.InstalledAppFlow")
+def test_authenticate_new_profile(mock_flow, temp_tokens_dir):
+    mock_flow_instance = mock_flow.from_client_secrets_file.return_value
+    mock_creds = MagicMock()
+    mock_creds.valid = True
+    mock_creds.expired = False
+    mock_creds.refresh_token = "refresh_token"
+    mock_flow_instance.run_local_server.return_value = mock_creds
 
-        assert service is not None
-        # Debugging call mismatch
-        try:
-            mock_from_client_secrets_file.assert_called_with("secrets.json", ["scope1"])
-        except AssertionError as e:
-            raise AssertionError(
-                f"Call mismatch. Actual: {mock_from_client_secrets_file.call_args}"
-            ) from e
+    # Also mock config to avoid needing client_secrets.json file
+    # Mock pickle.dump to avoid pickling the mock
+    with patch("src.auth.config.auth.client_secrets_file", "dummy_secrets.json"), \
+         patch("src.auth.os.path.exists", return_value=True), \
+         patch("src.auth.build"), \
+         patch("src.auth.pickle.dump"):
+        
+        authenticate_new_profile("test_user")
 
-        mock_build.assert_called_with("youtube", "v3", credentials=mock_creds)
+    # Verify file "exists" (we mocked pickle dump but file creation is done via open() in real code? 
+    # Wait, if we mock open? No, we didn't mock open. 
+    # But authenticate_new_profile calls get_authenticated_service which calls pickle.dump.
+    # The real open() will create the file.
+    
+    assert (temp_tokens_dir / "test_user.pickle").exists()
+    assert get_active_profile() == "test_user"
 
-    def test_get_authenticated_service_no_secrets(self, mocker, mock_profiles):
-        """Test failure when secrets file missing."""
-        mocker.patch("os.path.exists", return_value=False)
-        mocker.patch.object(config.auth, "client_secrets_file", "missing.json")
 
-        with pytest.raises(FileNotFoundError):
-            get_authenticated_service()
+def test_logout(temp_tokens_dir):
+    # Setup
+    token_path = temp_tokens_dir / "logout_user.pickle"
+    token_path.touch()
+    
+    set_active_profile("logout_user")
+    
+    assert logout("logout_user") is True
+    assert not token_path.exists()
+    
+    assert logout("non_existent") is False
+
+
+@patch("src.auth.build")
+def test_get_authenticated_service(mock_build, temp_tokens_dir):
+    # Create a dummy token for current profile
+    token_path = temp_tokens_dir / "default.pickle"
+    
+    mock_creds = MagicMock()
+    mock_creds.valid = True
+    
+    # Mock pickle.load to return our mock creds
+    with patch("src.auth.pickle.load", return_value=mock_creds): 
+        # Create empty file so os.path.exists returns true
+        token_path.touch()
+        
+        with patch("src.auth.migrate_legacy_token"):
+             service = get_authenticated_service()
+
+    assert service is not None
+    mock_build.assert_called_once()
+
+
+def test_logout_active_profile(temp_tokens_dir):
+    token_path = temp_tokens_dir / "default.pickle"
+    token_path.touch()
+    
+    # name=None should use active profile (default)
+    assert logout(None) is True
+    assert not token_path.exists()
+
+
+@patch("src.auth.build")
+def test_get_authenticated_service_refresh_error(mock_build, temp_tokens_dir):
+    token_path = temp_tokens_dir / "default.pickle"
+    
+    mock_creds = MagicMock()
+    mock_creds.valid = False
+    mock_creds.expired = True
+    mock_creds.refresh_token = "rt"
+    # refresh() raises Exception
+    mock_creds.refresh.side_effect = Exception("Refresh Failed")
+    
+    mock_creds.valid = False
+    mock_creds.expired = True
+    mock_creds.refresh_token = "rt"
+    # refresh() raises Exception
+    mock_creds.refresh.side_effect = Exception("Refresh Failed")
+    
+    # Don't try to pickle mock, just create file
+    with open(token_path, "wb") as f:
+        f.write(b"dummy")
+        
+    # Should try to refresh, fail, then try new flow -> fail because no secrets file
+    # We must patch os.path.exists to return False to trigger FileNotFoundError
+    with patch("src.auth.pickle.load", return_value=mock_creds), \
+         patch("src.auth.migrate_legacy_token"), \
+         patch("src.auth.os.path.exists", return_value=False), \
+         pytest.raises(FileNotFoundError):
+             
+        get_authenticated_service()
+
+
+@patch("src.auth.build")
+def test_get_authenticated_service_missing_secrets(mock_build, temp_tokens_dir):
+    # No token file
+    # Missing secrets file
+    with patch("src.auth.os.path.exists", side_effect=lambda p: False), \
+         pytest.raises(FileNotFoundError):
+             
+        get_authenticated_service()
