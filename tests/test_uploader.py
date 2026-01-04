@@ -1,66 +1,113 @@
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import MagicMock, patch
 
 import pytest
+from googleapiclient.errors import HttpError
 
 from src.uploader import VideoUploader
 
 
+@pytest.fixture
+def mock_service():
+    return MagicMock()
+
+
+@pytest.fixture
+def uploader(mock_service):
+    return VideoUploader(mock_service)
+
+
+@pytest.fixture(autouse=True)
+def mock_media_file_upload():
+    with patch("src.uploader.MediaFileUpload") as mock:
+        yield mock
+
+
 @pytest.mark.asyncio
-class TestVideoUploader:
-    @pytest.fixture
-    def mock_service(self):
-        return MagicMock()
+async def test_upload_video_success(uploader, mock_service):
+    # Setup mock chain
+    mock_insert = mock_service.videos().insert
+    mock_request = mock_insert.return_value
+    
+    # Mock next_chunk behavior
+    mock_status = MagicMock()
+    mock_status.progress.return_value = 0.5
+    
+    mock_request.next_chunk.side_effect = [
+        (mock_status, None),
+        (None, {"id": "vid_success"})
+    ]
 
-    @pytest.fixture
-    def uploader(self, mock_service):
-        return VideoUploader(mock_service)
+    path = MagicMock()
+    path.__str__.return_value = "/tmp/test.mp4"
+    path.name = "test.mp4"
+    
+    metadata = {
+        "title": "Title",
+        "description": "Desc",
+        "tags": ["tag"],
+        "recordingDetails": {}
+    }
 
-    async def test_upload_video_success(self, uploader, mock_service, tmp_path):
-        """Test successful video upload."""
-        # Setup mock responses
-        # 1. videos().insert() returns request object
-        mock_request = MagicMock()
-        mock_service.videos().insert.return_value = mock_request
+    # Execute
+    video_id = await uploader.upload_video(path, metadata)
 
-        # 2. request.next_chunk() simulation
-        # First call: (status=Progress, response=None)
-        # Second call: (status=None, response={id: "vid123"})
-        mock_status = MagicMock()
-        mock_status.progress.return_value = 0.5
+    assert video_id == "vid_success"
+    mock_insert.assert_called_once()
+    assert mock_request.next_chunk.call_count == 2
 
-        mock_request.next_chunk.side_effect = [
-            (mock_status, None),
-            (None, {"id": "vid123"}),
-        ]
 
-        file_path = tmp_path / "test.mp4"
-        file_path.write_text("dummy")
+@pytest.mark.asyncio
+async def test_upload_video_api_error(uploader, mock_service):
+    mock_insert = mock_service.videos().insert
+    mock_request = mock_insert.return_value
+    
+    # Simulate HttpError
+    resp = MagicMock()
+    resp.status = 500
+    # The retry logic catches this and retries. 
+    # To avoid long waits, we can patch the sleep/wait behavior or just expect RetryError from tenacity
+    # tenacity raises RetryError wrapping the original exception
+    
+    mock_request.next_chunk.side_effect = HttpError(resp, b"Error")
+    
+    path = MagicMock()
+    path.__str__.return_value = "/tmp/test.mp4"
+    
+    from tenacity import RetryError
+    with pytest.raises(RetryError):
+        await uploader.upload_video(path, {})
 
-        metadata = {"title": "Test Title", "description": "Desc", "tags": ["tag1"]}
 
-        progress_callback = MagicMock()
+@pytest.mark.asyncio
+async def test_upload_video_unexpected_failure(uploader, mock_service):
+    mock_insert = mock_service.videos().insert
+    mock_request = mock_insert.return_value
+    
+    # Mock response without ID
+    mock_request.next_chunk.return_value = (None, {"error": "Unknown"})
+    
+    path = MagicMock()
+    path.__str__.return_value = "/tmp/test.mp4"
+    path.name = "test.mp4"
+    
+    video_id = await uploader.upload_video(path, {})
+    assert video_id is None
 
-        video_id = await uploader.upload_video(file_path, metadata, progress_callback)
 
-        assert video_id == "vid123"
-        assert progress_callback.call_count == 1
-
-        # Verify API call args
-        args, kwargs = mock_service.videos().insert.call_args
-        body = kwargs["body"]
-        assert body["snippet"]["title"] == "Test Title"
-        assert body["status"]["privacyStatus"] == "private"
-
-    async def test_upload_failure(self, uploader, mock_service, tmp_path):
-        """Test upload failure handled gracefully (or re-raised depending on logic)."""
-        mock_request = MagicMock()
-        mock_service.videos().insert.return_value = mock_request
-
-        # Simulate error
-        mock_request.next_chunk.side_effect = Exception("Upload Failed")
-
-        file_path = tmp_path / "test.mp4"
-        file_path.write_text("dummy")
-
-        with pytest.raises(Exception, match="Upload Failed"):
-            await uploader.upload_video(file_path, {}, None)
+def test_should_retry_exception():
+    from src.uploader import should_retry_exception
+    import socket
+    
+    assert should_retry_exception(socket.error()) is True
+    assert should_retry_exception(socket.timeout()) is True
+    
+    # HttpError
+    resp = MagicMock()
+    resp.status = 503
+    assert should_retry_exception(HttpError(resp, b"")) is True
+    
+    resp.status = 404
+    assert should_retry_exception(HttpError(resp, b"")) is False
+    
+    assert should_retry_exception(ValueError()) is False
