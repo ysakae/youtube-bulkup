@@ -12,7 +12,9 @@ logger = logging.getLogger("youtube_up")
 class HistoryManager:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or config.history_db
-        self.db = TinyDB(self.db_path)
+        self.db = TinyDB(
+            self.db_path, indent=4, separators=(",", ": "), encoding="utf-8"
+        )
         self.table = self.db.table("uploads")
 
     def is_uploaded(self, file_hash: str) -> bool:
