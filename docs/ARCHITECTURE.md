@@ -16,16 +16,15 @@ youtube-bulkup/
 ├── .github/          # GitHub Actions ワークフロー定義
 ├── docs/             # 開発者向けドキュメント
 ├── src/              # ソースコード本体
-│   ├── auth.py       # OAuth2.0 認証ハンドリング
-│   ├── config.py     # 設定ファイル (settings.yaml) の読み込み・管理
-│   ├── history.py    # アップロード履歴管理 (JSON/DB)
-│   ├── logger.py     # ロギング設定
-│   ├── main.py       # エントリーポイント・CLI コマンド定義
-│   ├── metadata.py   # 動画ファイルからのメタデータ抽出・生成ロジック
-│   ├── scanner.py    # ディレクトリ走査・動画ファイル検出
-│   ├── uploader.py   # YouTube Data API ラッパー・アップロード処理
-│   └── ...
-├── tests/            # pytest によるテストコード
+│   ├── commands/     # CLIコマンド定義 (auth, upload, history...)
+│   ├── lib/          # 共通モジュール・コアロジック
+│   │   ├── auth/     # 認証・プロファイル管理 (auth.py, profiles.py)
+│   │   ├── core/     # 設定・ログ (config.py, logger.py)
+│   │   ├── data/     # データ永続化 (history.py)
+│   │   └── video/    # 動画処理 (metadata.py, scanner.py, uploader.py)
+│   ├── services/     # ビジネスロジック (upload_manager.py)
+│   └── main.py       # アプリケーションエントリーポイント
+├── tests/            # pytest によるテストコード (srcと同様の構成)
 ├── client_secrets.json # GCP OAuth クライアント情報 (ユーザーが配置)
 ├── settings.yaml     # ユーザー設定ファイル
 └── tokens/           # 認証トークン保存ディレクトリ
@@ -37,51 +36,48 @@ youtube-bulkup/
 
 ```mermaid
 graph TD
-    User[ユーザー] -->|コマンド実行| CLI["src/main.py (Typer)"]
-    CLI --> Auth["src/auth.py"]
+    User[ユーザー] -->|コマンド実行| CLI["src/main.py"]
+    CLI --> Commands["src/commands/*"]
+    Commands --> Service["src/services/upload_manager.py"]
+    
+    Commands -.-> Auth["src/lib/auth"]
     Auth -->|認証| YoutubeAPI[Google YouTube API]
     
-    CLI --> Scanner["src/scanner.py"]
-    Scanner -->|動画ファイルリスト| Metadata["src/metadata.py"]
+    Service --> Scanner["src/lib/video/scanner.py"]
+    Scanner -->|動画ファイルリスト| Metadata["src/lib/video/metadata.py"]
     
     Metadata -->|"ファイル解析 (hachoir)"| FileInfo["動画属性 (日時等)"]
     FileInfo -->|整形| UploadMeta[アップロード用メタデータ]
     
-    UploadMeta --> Uploader["src/uploader.py"]
+    Service --> Uploader["src/lib/video/uploader.py"]
     Uploader -->|アップロード| YoutubeAPI
     Uploader -->|進捗表示| UI[Rich Console]
     
-    Uploader -->|結果記録| History["src/history.py"]
-    History --> HistoryFile[upload_history.json]
-    Uploader -->|結果記録| History["src/history.py"]
+    Uploader -->|結果記録| History["src/lib/data/history.py"]
     History --> HistoryFile[upload_history.json]
 ```
 
 ## 4. 主要コンポーネント詳細
 
-### 4.1 CLI エントリーポイント (`src.main`)
-- `typer` を使用してコマンド引数の解析を行います。
-- `auth`, `upload`, `reupload` などのサブコマンドをオーケストレーションします。
+### 4.1 CLI エントリーポイント (`src.main`, `src.commands`)
+- `src.main` は `src.commands` 配下の各モジュールを `typer` アプリケーションとして統合します。
+- `auth`, `upload` などのコマンドロジックは `src.commands` パッケージに分離されています。
 
-### 4.2 認証モジュール (`src.auth`)
+### 4.2 認証モジュール (`src.lib.auth`)
 - `google-auth-oauthlib` を使用して OAuth 2.0 フローを処理します。
-- 複数プロファイル管理に対応しており、`tokens/` ディレクトリ配下にプロファイルごとのトークンを保存します。
+- `src.lib.auth.profiles` で複数プロファイル（トークン）の管理を行います。
 
-### 4.3 スキャナー (`src.scanner`)
-- 指定されたディレクトリを再帰的（または非再帰的）に走査し、アップロード対象の動画ファイルをリストアップします。
-- 隠しファイルやシステムファイルを除外するフィルタリング機能も持ちます。
+### 4.3 ビジネスロジック (`src.services`)
+- `src.services.upload_manager` がアップロードプロセス全体のオーケストレーション（スキャン、重複チェック、メタデータ生成、アップロード）を担当します。
 
-### 4.4 メタデータ生成 (`src.metadata`)
-- **役割**: 動画ファイルそのものと、そのパス情報から YouTube 用のメタデータ（タイトル、説明、タグ）を生成します。
-- **技術**: `hachoir` ライブラリを使用して動画ヘッダから撮影日時や長さなどの情報を抽出します。
-- **仕様詳細**: 詳細な生成ルールについては [METADATA_SPEC.md](./METADATA_SPEC.md) を参照してください。
+### 4.4 動画処理モジュール (`src.lib.video`)
+- **Scanner (`scanner.py`)**: ディレクトリ走査と動画ファイル検出を行います。
+- **Metadata (`metadata.py`)**: `hachoir` を用いて動画ファイルのメタデータを抽出し、アップロード用に整形します。
+- **Uploader (`uploader.py`)**: YouTube Data API v3 をラップし、リジューム可能なアップロードとリトライ処理を提供します。
 
-### 4.5 アップローダー (`src.uploader`)
-- YouTube Data API v3 の `videos.insert` メソッドをラップしています。
-- `googleapiclient.http.MediaFileUpload` を使用して、再開可能なアップロード（Resumable Upload）を実装しています。
-- ネットワークエラー時の指数バックオフによるリトライ処理 (`tenacity` 利用) を行います。
+### 4.5 データ管理 (`src.lib.data`)
+- **History (`history.py`)**: `tinydb` を利用してアップロード履歴を管理します。重複排除や再試行ロジックの基盤となります。
 
-### 4.6 履歴管理 (`src.history`)
-- `tinydb` を利用して `upload_history.json` にアップロード結果を記録します。
-- **重複排除**: ファイルのハッシュ値を用いて、既にアップロード済みのファイルを検出・スキップします。
-- **再アップロード**: ファイルハッシュやYouTube Video IDを用いた履歴検索により、特定のファイルの履歴削除や再アップロードをサポートします。
+### 4.6 コアモジュール (`src.lib.core`)
+- **Config (`config.py`)**: アプリケーション設定の読み込み。
+- **Logger (`logger.py`)**: 統一されたロギング設定。
