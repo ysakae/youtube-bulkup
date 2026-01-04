@@ -60,6 +60,27 @@ class HistoryManager:
         )
         logger.warning(f"Recorded upload failure for {file_path}")
 
+    def delete_record(self, file_hash: str) -> bool:
+        """Delete an upload record by file hash. Returns True if record was found and deleted."""
+        File = Query()
+        deleted_ids = self.table.remove(File.file_hash == file_hash)
+        if deleted_ids:
+            logger.info(f"Deleted upload history for hash {file_hash}")
+            return True
+        return False
+
+    def get_record(self, file_hash: str) -> Optional[Dict[str, Any]]:
+        """Get an upload record by file hash."""
+        File = Query()
+        result = self.table.search(File.file_hash == file_hash)
+        return result[0] if result else None
+
+    def get_record_by_video_id(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """Get an upload record by video ID."""
+        File = Query()
+        result = self.table.search(File.video_id == video_id)
+        return result[0] if result else None
+
     def get_upload_count(self) -> int:
         return len(self.table)
 
