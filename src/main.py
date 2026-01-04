@@ -294,9 +294,18 @@ async def process_video_files(
 
         # Semaphore for concurrency
         sem = asyncio.Semaphore(workers)
+        stop_event = asyncio.Event()
 
         async def process_file(file_path: Path):
+            if stop_event.is_set():
+                progress.advance(overall_task)
+                return
+
             async with sem:
+                if stop_event.is_set():
+                    progress.advance(overall_task)
+                    return
+
                 task_id = progress.add_task(f"Processing {file_path.name}", total=None)
                 file_hash = "unknown"
 
@@ -361,13 +370,27 @@ async def process_video_files(
                         progress.console.print(
                             f"[bold red]Error processing {file_path.name}: No YouTube channel found.[/]"
                         )
+                    elif e.resp.status == 403 and "quotaExceeded" in str(e):
+                        progress.console.print(
+                            "[bold red]CRITICAL: YouTube Upload Quota Exceeded![/]"
+                        )
+                        progress.console.print(
+                            "Stopping all further uploads. Please try again tomorrow."
+                        )
+                        stop_event.set()
+                        # Record this failure too so it can be retried later
+                        if file_hash != "unknown":
+                            history.add_failure(str(file_path), file_hash, "Quota Exceeded")
                     else:
                         progress.console.print(
                             f"[bold red]API Error processing {file_path.name}: {e}[/]"
                         )
                     logger.error(f"API Error processing {file_path.name}: {e}")
-                    if file_hash != "unknown":
+                    
+                    # If not quota error, record failure as usual
+                    if not stop_event.is_set() and file_hash != "unknown":
                         history.add_failure(str(file_path), file_hash, str(e))
+
                 except Exception as e:
                     progress.console.print(
                         f"[bold red]Error processing {file_path.name}: {e}[/]"
