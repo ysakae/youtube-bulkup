@@ -194,6 +194,20 @@ async def process_video_files(
                         if file_hash != "unknown":
                             target_playlist = playlist_name or file_path.parent.name
                             history.add_failure(str(file_path), file_hash, "Quota Exceeded", playlist_name=target_playlist)
+                    elif e.resp.status == 400 and "uploadLimitExceeded" in str(e):
+                        progress.console.print(
+                            "[bold red]CRITICAL: Upload Limit Exceeded (Account Limit)![/]"
+                        )
+                        progress.console.print(
+                            "You have reached your daily upload limit for this account."
+                        )
+                        progress.console.print(
+                            "Stopping all further uploads. Please try again in 24 hours."
+                        )
+                        stop_event.set()
+                        if file_hash != "unknown":
+                            target_playlist = playlist_name or file_path.parent.name
+                            history.add_failure(str(file_path), file_hash, "Account Upload Limit Exceeded", playlist_name=target_playlist)
                     else:
                         progress.console.print(
                             f"[bold red]API Error processing {file_path.name}: {e}[/]"
