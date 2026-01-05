@@ -21,7 +21,7 @@ youtube-bulkup/
 │   │   ├── auth/     # 認証・プロファイル管理 (auth.py, profiles.py)
 │   │   ├── core/     # 設定・ログ (config.py, logger.py)
 │   │   ├── data/     # データ永続化 (history.py)
-│   │   └── video/    # 動画処理 (metadata.py, scanner.py, uploader.py)
+│   │   └── video/    # 動画処理 (metadata.py, playlist.py, scanner.py, uploader.py)
 │   ├── services/     # ビジネスロジック (upload_manager.py)
 │   └── main.py       # アプリケーションエントリーポイント
 ├── tests/            # pytest によるテストコード (srcと同様の構成)
@@ -73,10 +73,11 @@ graph TD
 ### 4.4 動画処理モジュール (`src.lib.video`)
 - **Scanner (`scanner.py`)**: ディレクトリ走査と動画ファイル検出を行います。
 - **Metadata (`metadata.py`)**: `hachoir` を用いて動画ファイルのメタデータを抽出し、アップロード用に整形します。
+- **PlaylistManager (`playlist.py`)**: YouTube Playlist API とのやり取りをカプセル化し、プレイリストの取得・作成・動画追加を行います。APIコール削減のためのキャッシュ機能を備えています。
 - **Uploader (`uploader.py`)**: YouTube Data API v3 をラップし、リジューム可能なアップロードとリトライ処理を提供します。
 
 ### 4.5 データ管理 (`src.lib.data`)
-- **History (`history.py`)**: `tinydb` を利用してアップロード履歴を管理します。重複排除や再試行ロジックの基盤となります。
+- **History (`history.py`)**: `tinydb` を利用してアップロード履歴を管理します。重複排除や再試行ロジックの基盤となります。v2スキーマより、失敗時のプレイリスト名も永続化され、リトライ時の自動復元に使用されます。
 
 ### 4.6 コアモジュール (`src.lib.core`)
 - **Config (`config.py`)**: アプリケーション設定の読み込み。
