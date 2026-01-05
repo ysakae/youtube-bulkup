@@ -57,7 +57,9 @@ def sync(
         table.add_column("Video ID", style="cyan")
         table.add_column("Title", style="magenta")
         for item in missing_local:
-            table.add_row(item["video_id"], item["remote_title"])
+            vid = item['video_id']
+            link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
+            table.add_row(link, item["remote_title"])
         console.print(table)
 
     if missing_remote:
@@ -65,7 +67,9 @@ def sync(
         table.add_column("Video ID", style="cyan")
         table.add_column("Local Path", style="dim")
         for item in missing_remote:
-            table.add_row(item["video_id"], item["local_path"])
+            vid = item['video_id']
+            link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
+            table.add_row(link, item["local_path"])
         console.print(table)
 
     if not missing_local and not missing_remote:

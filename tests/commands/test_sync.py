@@ -60,6 +60,8 @@ def test_sync_perfect_match(mock_dependencies):
     assert "In Sync: 1" in result.stdout
     assert "Local history is perfectly in sync" in result.stdout
 
+    assert result.exit_code == 0
+
 def test_sync_missing_local(mock_dependencies):
     # Remote has vid1, Local has empty
     mock_service = mock_dependencies["service"]
@@ -77,10 +79,21 @@ def test_sync_missing_local(mock_dependencies):
     
     mock_dependencies["history"].get_all_records.return_value = []
     
-    result = runner.invoke(app, ["sync"])
-    assert result.exit_code == 0
-    assert "Missing in Local" in result.stdout
-    assert "vid1" in result.stdout
+    with patch("src.commands.sync.Table") as MockTable:
+        mock_table_instance = MockTable.return_value
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        
+        # Verify add_row called with link markup
+        # args[0] should be the Video ID column content
+        calls = mock_table_instance.add_row.call_args_list
+        # We expect at least one call. The one for vid1 should contain the link.
+        found_link = False
+        for call in calls:
+            if "[link=https://youtu.be/vid1]vid1[/link]" in call[0][0]:
+                found_link = True
+                break
+        assert found_link, "Link markup not found in Table.add_row calls"
 
 def test_sync_missing_remote(mock_dependencies):
     # Remote has empty, Local has vid1
@@ -96,7 +109,15 @@ def test_sync_missing_remote(mock_dependencies):
         {"video_id": "vid1", "status": "success", "file_path": "/path/to/vid1.mp4"}
     ]
     
-    result = runner.invoke(app, ["sync"])
-    assert result.exit_code == 0
-    assert "Missing in Remote" in result.stdout
-    assert "vid1" in result.stdout
+    with patch("src.commands.sync.Table") as MockTable:
+        mock_table_instance = MockTable.return_value
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        
+        calls = mock_table_instance.add_row.call_args_list
+        found_link = False
+        for call in calls:
+            if "[link=https://youtu.be/vid1]vid1[/link]" in call[0][0]:
+                found_link = True
+                break
+        assert found_link, "Link markup not found in Table.add_row calls"
