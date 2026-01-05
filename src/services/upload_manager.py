@@ -35,7 +35,7 @@ async def process_video_files(
     workers: int,
     playlist_name: str = None,
     force: bool = False,
-):
+) -> bool:
     """
     Process a list of video files: Deduplicate, Metadata, Upload.
     """
@@ -238,6 +238,8 @@ async def process_video_files(
 
         # Batch processing
         await asyncio.gather(*tasks)
+        
+        return stop_event.is_set()
 
 
 async def orchestrate_upload(

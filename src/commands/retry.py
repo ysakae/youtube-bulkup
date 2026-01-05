@@ -74,8 +74,12 @@ def retry(
         else:
              console.print(f"\n[bold]Retrying {len(files)} files (default playlist)...[/]")
 
-        asyncio.run(
+        is_stopped = asyncio.run(
             process_video_files(
                 files, uploader, history, meta_gen, dry_run=dry_run, workers=workers, playlist_name=pl_name
             )
         )
+        
+        if is_stopped:
+            console.print("[bold red]Process halted due to critical error. Stopping remaining playlists.[/]")
+            break
