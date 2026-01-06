@@ -13,8 +13,7 @@ class AuthConfig(BaseModel):
     client_secrets_file: str = "client_secrets.json"
     token_file: str = "token.pickle"
     scopes: List[str] = [
-        "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtube",
     ]
 
 
