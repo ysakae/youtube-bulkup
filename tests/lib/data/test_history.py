@@ -39,7 +39,22 @@ def test_add_and_check_record(history: HistoryManager):
     history.add_record(file_path, file_hash, video_id, metadata)
 
     assert history.is_uploaded(file_hash)
+    assert history.is_uploaded(file_hash)
     assert history.get_upload_count() == 1
+
+
+def test_is_uploaded_by_path(history: HistoryManager):
+    file_path = "/tmp/path_test.mp4"
+    file_hash = "path_hash"
+    video_id = "vid_path"
+    metadata = {}
+
+    assert not history.is_uploaded_by_path(file_path)
+
+    history.add_record(file_path, file_hash, video_id, metadata)
+
+    assert history.is_uploaded_by_path(file_path)
+    assert not history.is_uploaded_by_path("/tmp/other.mp4")
 
 
 def test_add_failure(history: HistoryManager):

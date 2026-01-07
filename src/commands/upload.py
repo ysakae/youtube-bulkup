@@ -24,6 +24,9 @@ def upload(
     workers: int = typer.Option(
         1, help="Number of concurrent uploads (careful with quota!)"
     ),
+    simple_check: bool = typer.Option(
+        False, "--simple-check", help="Use simple file path check for deduplication (faster but less robust)"
+    ),
 ):
     """
     Upload videos from a directory.
@@ -44,5 +47,5 @@ def upload(
     # Run async orchestrator
     # Run async orchestrator
     asyncio.run(
-        orchestrate_upload(directory, uploader, history, meta_gen, dry_run, workers, playlist)
+        orchestrate_upload(directory, uploader, history, meta_gen, dry_run, workers, playlist, simple_check=simple_check)
     )

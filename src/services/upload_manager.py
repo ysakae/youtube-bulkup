@@ -35,6 +35,7 @@ async def process_video_files(
     workers: int,
     playlist_name: str = None,
     force: bool = False,
+    simple_check: bool = False,
 ) -> bool:
     """
     Process a list of video files: Deduplicate, Metadata, Upload.
@@ -93,6 +94,19 @@ async def process_video_files(
 
                 try:
                     # Deduplication
+                    if simple_check:
+                         progress.update(
+                            task_id, description=f"[yellow]Checking dup path {file_path.name}..."
+                        )
+                         # Check by path FIRST to avoid hash calculation
+                         if not force and history.is_uploaded_by_path(str(file_path)):
+                            progress.console.print(
+                                f"[dim]Skipping duplicate (by path): {file_path.name}[/]"
+                            )
+                            progress.update(task_id, visible=False)
+                            progress.advance(overall_task)
+                            return
+                    
                     progress.update(
                         task_id, description=f"[yellow]Hashing {file_path.name}..."
                     )
@@ -251,6 +265,7 @@ async def orchestrate_upload(
     dry_run: bool,
     workers: int,
     playlist: str = None,
+    simple_check: bool = False,
 ):
 
     """
@@ -265,5 +280,5 @@ async def orchestrate_upload(
         return
 
     await process_video_files(
-        video_files, uploader, history, metadata_gen, dry_run, workers, playlist
+        video_files, uploader, history, metadata_gen, dry_run, workers, playlist, simple_check=simple_check
     )
