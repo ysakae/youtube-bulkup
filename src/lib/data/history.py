@@ -28,20 +28,19 @@ class HistoryManager:
         current_records = self.table.all()
         updates = []
         for record in current_records:
-            if "playlist_name" not in record:
-                # We can't infer it easily without the original path context being strict,
-                # so we default to None. 
-                # Or we could infer from file parent name?
-                # For now, let's just ensure the field exists.
-                # Actually, inferring from file_path parent is safer if we want retry to work for old failures.
+
+            if "playlist_name" not in record or record["playlist_name"] is None:
+                # Infer from file parent name if possible
+                file_path_str = record.get("file_path")
+                new_playlist_name = None
+                if file_path_str:
+                    try:
+                        from pathlib import Path
+                        new_playlist_name = Path(file_path_str).parent.name
+                    except Exception:
+                        pass
                 
-                # Try to infer details if possible, or just None.
-                # If we want old failures to be retriable with playlist logic, we might need a smart guess.
-                # But safer to leave None and let fallback happen (failed record usually has file path).
-                # Wait, if we leave it None, retry loop needs to re-evaluate playlist.
-                
-                # Let's just set None for now. logic in retry command will handle the default (folder name).
-                updates.append((record.doc_id, {"playlist_name": None}))
+                updates.append((record.doc_id, {"playlist_name": new_playlist_name}))
         
         if updates:
             logger.info(f"Migrating {len(updates)} records to schema v2 (add playlist_name)...")

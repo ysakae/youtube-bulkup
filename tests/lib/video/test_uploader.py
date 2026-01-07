@@ -12,14 +12,22 @@ def mock_service():
     return MagicMock()
 
 
+
 @pytest.fixture
-def uploader(mock_service):
-    return VideoUploader(mock_service)
+def uploader():
+    return VideoUploader(MagicMock())
 
 
 @pytest.fixture(autouse=True)
 def mock_media_file_upload():
     with patch("src.lib.video.uploader.MediaFileUpload") as mock:
+        yield mock
+
+
+@pytest.fixture(autouse=True)
+def mock_build(mock_service):
+    with patch("src.lib.video.uploader.build") as mock:
+        mock.return_value = mock_service
         yield mock
 
 
