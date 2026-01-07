@@ -60,6 +60,14 @@ class HistoryManager:
             (File.file_hash == file_hash) & (File.status == "success")
         )
 
+    def is_uploaded_by_path(self, file_path: str) -> bool:
+        """Check if a file with the given path has already been successfully uploaded."""
+        File = Query()
+        # Ensure we use exact string match for the path
+        return self.table.contains(
+            (File.file_path == str(file_path)) & (File.status == "success")
+        )
+
 
     def add_record(
         self,
