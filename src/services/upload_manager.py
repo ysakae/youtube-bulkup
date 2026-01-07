@@ -141,16 +141,17 @@ async def process_video_files(
                         file_path, metadata, progress_callback=update_prog
                     )
 
+
                     if video_id:
+                        # Playlist Management
+                        target_playlist = playlist_name or file_path.parent.name
+                        
                         history.add_record(
-                            str(file_path), file_hash, video_id, metadata
+                            str(file_path), file_hash, video_id, metadata, playlist_name=target_playlist
                         )
                         progress.console.print(
                             f"[bold green]Uploaded {file_path.name} -> {video_id}[/]"
                         )
-
-                        # Playlist Management
-                        target_playlist = playlist_name or file_path.parent.name
                         
                         if playlist_manager:
                             try:
