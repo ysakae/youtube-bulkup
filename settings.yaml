@@ -5,8 +5,7 @@ auth:
   client_secrets_file: "client_secrets.json"
   token_file: "token.pickle"
   scopes:
-    - "https://www.googleapis.com/auth/youtube.upload"
-    - "https://www.googleapis.com/auth/youtube.readonly"
+    - "https://www.googleapis.com/auth/youtube"
 
 # Upload settings
 upload:
