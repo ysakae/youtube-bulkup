@@ -120,6 +120,25 @@ class HistoryManager:
             return True
         return False
 
+    def delete_record_by_path(self, file_path: str) -> bool:
+        """Delete an upload record by file path. Returns True if record was found and deleted."""
+        File = Query()
+        # TinyDB path matching should be exact string match
+        deleted_ids = self.table.remove(File.file_path == str(file_path))
+        if deleted_ids:
+            logger.info(f"Deleted upload history for path {file_path}")
+            return True
+        return False
+
+    def delete_record_by_video_id(self, video_id: str) -> bool:
+        """Delete an upload record by video ID. Returns True if record was found and deleted."""
+        File = Query()
+        deleted_ids = self.table.remove(File.video_id == video_id)
+        if deleted_ids:
+            logger.info(f"Deleted upload history for video ID {video_id}")
+            return True
+        return False
+
     def get_record(self, file_hash: str) -> Optional[Dict[str, Any]]:
         """Get an upload record by file hash."""
         File = Query()
