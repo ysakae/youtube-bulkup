@@ -5,8 +5,10 @@ __pycache__/
 *.pickle
 client_secrets.json
 upload_history.json
-test_videos/
-test_videos/
+# Logs and temporary files
+*.log
+test_output.txt
+
 
 # Environment variables
 .env
