@@ -4,9 +4,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Generator
-
 import pytest
-from tinydb import TinyDB
+from tinydb import TinyDB, Query
 
 from src.lib.data.history import HistoryManager
 
@@ -24,8 +23,10 @@ def temp_db_path() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def history(temp_db_path: str) -> HistoryManager:
-    return HistoryManager(db_path=temp_db_path)
+def history(temp_db_path: str) -> Generator[HistoryManager, None, None]:
+    manager = HistoryManager(db_path=temp_db_path)
+    yield manager
+    manager.close()
 
 
 def test_add_and_check_record(history: HistoryManager):
@@ -130,3 +131,73 @@ def test_get_all_records(history: HistoryManager):
     records_limit = history.get_all_records(limit=1)
     assert len(records_limit) == 1
     assert records_limit[0]["file_hash"] == "h2"
+
+
+def test_schema_migration_v2(temp_db_path):
+    """Test that old records without playlist_name are migrated."""
+    # 1. Create DB with old schema data
+    db = TinyDB(temp_db_path)
+    table = db.table("uploads")
+    
+    # Old record: missing playlist_name
+    table.insert({
+        "file_path": "/Users/test/videos/my_playlist/video1.mp4",
+        "file_hash": "hash1",
+        "video_id": "vid1",
+        "status": "success"
+    })
+    
+    # Record that already has it (should not change)
+    table.insert({
+        "file_path": "/Users/test/videos/other/video2.mp4",
+        "file_hash": "hash2",
+        "video_id": "vid2",
+        "status": "success",
+        "playlist_name": "Existing Playlist"
+    })
+    
+    # Record with no file path (cannot infer)
+    table.insert({
+        "file_path": None,
+        "file_hash": "hash3",
+        "video_id": "vid3",
+        "status": "success"
+    })
+    
+    db.close()
+    
+    # 2. Initialize HistoryManager (triggers migration)
+    manager = HistoryManager(db_path=temp_db_path)
+    
+    # 3. Verify
+    rec1 = manager.get_record("hash1")
+    assert rec1["playlist_name"] == "my_playlist"
+    
+    rec2 = manager.get_record("hash2")
+    assert rec2["playlist_name"] == "Existing Playlist"
+    
+    rec3 = manager.get_record("hash3")
+    assert rec3.get("playlist_name") is None
+    
+    manager.close()
+
+
+def test_delete_by_path_and_video(history: HistoryManager):
+    # Setup
+    history.add_record("/tmp/p1.mp4", "h1", "v1", {})
+    history.add_record("/tmp/p2.mp4", "h2", "v2", {})
+    
+    assert history.get_upload_count() == 2
+    
+    # Delete by path
+    assert history.delete_record_by_path("/tmp/p1.mp4")
+    assert not history.delete_record_by_path("/tmp/nonexistent.mp4")
+    assert history.get_upload_count() == 1
+    assert history.get_record("h1") is None
+    
+    # Delete by video_id
+    assert history.delete_record_by_video_id("v2")
+    assert not history.delete_record_by_video_id("nonexistent")
+    assert history.get_upload_count() == 0
+    assert history.get_record("h2") is None
+

@@ -35,6 +35,11 @@ dev = [
 addopts = "--cov=src --cov-report=term-missing"
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning:httplib2.*",
+    "ignore::DeprecationWarning:pkg_resources.*",
+    "ignore::ResourceWarning:httplib2.*",
+]
 
 [tool.ruff]
 line-length = 88
