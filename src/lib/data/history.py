@@ -44,9 +44,7 @@ class HistoryManager:
         
         if updates:
             logger.info(f"Migrating {len(updates)} records to schema v2 (add playlist_name)...")
-            def _update_op(doc_ids, changes):
-                for doc_id, change in zip(doc_ids, changes):
-                    self.table.update(change, doc_ids=[doc_id])
+
             
             # Simple loop update
             for doc_id, change in updates:
@@ -174,3 +172,8 @@ class HistoryManager:
         """Get all failed upload records."""
         File = Query()
         return self.table.search(File.status == "failed")
+
+    def close(self):
+        """Close the database connection."""
+        self.db.close()
+
