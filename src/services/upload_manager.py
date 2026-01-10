@@ -36,6 +36,7 @@ async def process_video_files(
     playlist_name: str = None,
     force: bool = False,
     simple_check: bool = False,
+    privacy_status: str = None,
 ) -> bool:
     """
     Process a list of video files: Deduplicate, Metadata, Upload.
@@ -125,13 +126,19 @@ async def process_video_files(
                     idx, tot = folder_map.get(file_path, (0, 0))
                     metadata = metadata_gen.generate(file_path, idx, tot)
 
+                    # Override privacy status if specified via CLI
+                    if privacy_status:
+                        metadata["privacy_status"] = privacy_status
+
                     if dry_run:
                         target_playlist = playlist_name or file_path.parent.name
+                        privacy_display = metadata.get("privacy_status", config.upload.privacy_status)
                         progress.console.print(
                             Panel(
                                 f"Title: {metadata['title']}\n"
                                 f"Desc: {metadata['description'][:50]}...\n"
                                 f"Tags: {metadata['tags']}\n"
+                                f"Privacy: {privacy_display}\n"
                                 f"Rec Details: {metadata.get('recordingDetails')}\n"
                                 f"[bold]Playlist:[/] {target_playlist}",
                                 title=f"[Dry Run] Metadata for {file_path.name}",
@@ -266,6 +273,7 @@ async def orchestrate_upload(
     workers: int,
     playlist: str = None,
     simple_check: bool = False,
+    privacy_status: str = None,
 ):
 
     """
@@ -280,5 +288,5 @@ async def orchestrate_upload(
         return
 
     await process_video_files(
-        video_files, uploader, history, metadata_gen, dry_run, workers, playlist, simple_check=simple_check
+        video_files, uploader, history, metadata_gen, dry_run, workers, playlist, simple_check=simple_check, privacy_status=privacy_status
     )

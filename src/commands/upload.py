@@ -27,6 +27,9 @@ def upload(
     simple_check: bool = typer.Option(
         False, "--simple-check", help="Use simple file path check for deduplication (faster but less robust)"
     ),
+    privacy: str = typer.Option(
+        None, "--privacy", help="Override privacy status (private, public, unlisted)"
+    ),
 ):
     """
     Upload videos from a directory.
@@ -47,5 +50,15 @@ def upload(
     # Run async orchestrator
     # Run async orchestrator
     asyncio.run(
-        orchestrate_upload(directory, uploader, history, meta_gen, dry_run, workers, playlist, simple_check=simple_check)
+        orchestrate_upload(
+            directory,
+            uploader,
+            history,
+            meta_gen,
+            dry_run,
+            workers,
+            playlist,
+            simple_check=simple_check,
+            privacy_status=privacy
+        )
     )
