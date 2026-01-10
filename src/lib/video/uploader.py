@@ -111,3 +111,29 @@ class VideoUploader:
                 f"Upload failed unexpectedly for {file_path.name}. Response: {response}"
             )
             return None
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(config.upload.retry_count),
+        retry=retry_if_exception(should_retry_exception),
+    )
+    async def upload_thumbnail(self, video_id: str, thumbnail_path: Path) -> bool:
+        """
+        Uploads a custom thumbnail for a video.
+        """
+        logger.info(f"Uploading thumbnail for {video_id} from {thumbnail_path.name}...")
+        
+        service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+        
+        try:
+            await asyncio.to_thread(
+                service.thumbnails().set(
+                    videoId=video_id,
+                    media_body=MediaFileUpload(str(thumbnail_path))
+                ).execute
+            )
+            logger.info(f"Thumbnail uploaded successfully for {video_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail for {video_id}: {e}")
+            raise e

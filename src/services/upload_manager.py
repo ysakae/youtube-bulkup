@@ -141,6 +141,7 @@ async def process_video_files(
                                 f"Tags: {metadata['tags']}\n"
                                 f"Privacy: {privacy_display}\n"
                                 f"Rec Details: {metadata.get('recordingDetails')}\n"
+                                f"Thumbnail: {[f.with_suffix(ext).name for ext in ['.jpg', '.jpeg', '.png'] if f.with_suffix(ext).exists()] or 'None'}\n"
                                 f"[bold]Playlist:[/] {target_playlist}",
                                 title=f"[Dry Run] Metadata for {file_path.name}",
                             )
@@ -197,6 +198,24 @@ async def process_video_files(
                                 logger.error(f"Failed to add to playlist {target_playlist}: {e}")
                                 progress.console.print(
                                     f"[red]Warning: Failed to add to playlist: {e}[/]"
+                                )
+                        
+                        # Thumbnail Upload
+                        thumbnail_path = None
+                        for ext in [".jpg", ".jpeg", ".png"]:
+                            possible_thumb = file_path.with_suffix(ext)
+                            if possible_thumb.exists():
+                                thumbnail_path = possible_thumb
+                                break
+                        
+                        if thumbnail_path:
+                            try:
+                                progress.console.print(f"[cyan]Found thumbnail: {thumbnail_path.name}[/]")
+                                await uploader.upload_thumbnail(video_id, thumbnail_path)
+                            except Exception as e:
+                                logger.error(f"Failed to upload thumbnail for {video_id}: {e}")
+                                progress.console.print(
+                                    f"[red]Warning: Failed to upload thumbnail: {e}[/]"
                                 )
 
 
