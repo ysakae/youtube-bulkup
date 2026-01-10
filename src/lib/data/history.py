@@ -18,6 +18,7 @@ class HistoryManager:
         self.table = self.db.table("uploads")
         self.table = self.db.table("uploads")
         self._migrate_schema_v2()
+        self._migrate_schema_v3()
 
     def _migrate_schema_v2(self):
         """
@@ -50,6 +51,31 @@ class HistoryManager:
             for doc_id, change in updates:
                 self.table.update(change, doc_ids=[doc_id])
 
+    def _migrate_schema_v3(self):
+        """
+        Migrate existing records to include 'file_size' field if missing.
+        Backfill from actual file system if possible.
+        """
+        current_records = self.table.all()
+        updates = []
+        for record in current_records:
+            if "file_size" not in record:
+                file_path_str = record.get("file_path")
+                size = 0
+                if file_path_str:
+                    try:
+                        from pathlib import Path
+                        p = Path(file_path_str)
+                        if p.exists():
+                            size = p.stat().st_size
+                    except Exception:
+                        pass
+                updates.append((record.doc_id, {"file_size": size}))
+        
+        if updates:
+            logger.info(f"Migrating {len(updates)} records to schema v3 (add file_size)...")
+            for doc_id, change in updates:
+                self.table.update(change, doc_ids=[doc_id])
 
     def is_uploaded(self, file_hash: str) -> bool:
         """Check if a file with the given hash has already been successfully uploaded."""
@@ -74,6 +100,7 @@ class HistoryManager:
         video_id: str,
         metadata: Dict[str, Any],
         playlist_name: Optional[str] = None,
+        file_size: int = 0,
     ):
         """Record a successful upload."""
         File = Query()
@@ -87,6 +114,7 @@ class HistoryManager:
                 "status": "success",
                 "error": None,
                 "playlist_name": playlist_name,
+                "file_size": file_size,
             },
             File.file_hash == file_hash,
         )
@@ -98,6 +126,7 @@ class HistoryManager:
         file_hash: str,
         error_msg: str,
         playlist_name: Optional[str] = None,
+        file_size: int = 0,
     ):
         """Record a failed upload."""
         File = Query()
@@ -111,6 +140,7 @@ class HistoryManager:
                 "status": "failed",
                 "error": str(error_msg),
                 "playlist_name": playlist_name,
+                "file_size": file_size,
             },
             File.file_hash == file_hash,
         )

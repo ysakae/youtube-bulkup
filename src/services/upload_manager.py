@@ -111,6 +111,7 @@ async def process_video_files(
                     progress.update(
                         task_id, description=f"[yellow]Hashing {file_path.name}..."
                     )
+                    file_size = file_path.stat().st_size
                     file_hash = await asyncio.to_thread(calculate_hash, file_path)
 
                     if not force and history.is_uploaded(file_hash):
@@ -152,7 +153,7 @@ async def process_video_files(
                     progress.update(
                         task_id,
                         description=f"[red]Uploading {file_path.name}...",
-                        total=file_path.stat().st_size,
+                        total=file_size,
                     )
 
                     def update_prog(p, total):
@@ -168,7 +169,7 @@ async def process_video_files(
                         target_playlist = playlist_name or file_path.parent.name
                         
                         history.add_record(
-                            str(file_path), file_hash, video_id, metadata, playlist_name=target_playlist
+                            str(file_path), file_hash, video_id, metadata, playlist_name=target_playlist, file_size=file_size
                         )
                         progress.console.print(
                             f"[bold green]Uploaded {file_path.name} -> {video_id}[/]"
@@ -215,7 +216,7 @@ async def process_video_files(
                         # Record this failure too so it can be retried later
                         if file_hash != "unknown":
                             target_playlist = playlist_name or file_path.parent.name
-                            history.add_failure(str(file_path), file_hash, "Quota Exceeded", playlist_name=target_playlist)
+                            history.add_failure(str(file_path), file_hash, "Quota Exceeded", playlist_name=target_playlist, file_size=file_size)
                     elif e.resp.status == 400 and "uploadLimitExceeded" in str(e):
                         progress.console.print(
                             "[bold red]CRITICAL: Upload Limit Exceeded (Account Limit)![/]"
@@ -229,7 +230,7 @@ async def process_video_files(
                         stop_event.set()
                         if file_hash != "unknown":
                             target_playlist = playlist_name or file_path.parent.name
-                            history.add_failure(str(file_path), file_hash, "Account Upload Limit Exceeded", playlist_name=target_playlist)
+                            history.add_failure(str(file_path), file_hash, "Account Upload Limit Exceeded", playlist_name=target_playlist, file_size=file_size)
                     else:
                         progress.console.print(
                             f"[bold red]API Error processing {file_path.name}: {e}[/]"
@@ -239,7 +240,7 @@ async def process_video_files(
                     # If not quota error, record failure as usual
                     if not stop_event.is_set() and file_hash != "unknown":
                         target_playlist = playlist_name or file_path.parent.name
-                        history.add_failure(str(file_path), file_hash, str(e), playlist_name=target_playlist)
+                        history.add_failure(str(file_path), file_hash, str(e), playlist_name=target_playlist, file_size=file_size)
 
                 except Exception as e:
                     progress.console.print(
@@ -248,7 +249,9 @@ async def process_video_files(
                     logger.exception(f"Error processing {file_path.name}")
                     if file_hash != "unknown":
                         target_playlist = playlist_name or file_path.parent.name
-                        history.add_failure(str(file_path), file_hash, str(e), playlist_name=target_playlist)
+                        # file_size might be unset if error happened before hashing (unlikely given flow but safe to check or init)
+                        # Actually file_size is set before hashing now.
+                        history.add_failure(str(file_path), file_hash, str(e), playlist_name=target_playlist, file_size=file_size)
                 finally:
                     progress.update(task_id, visible=False)
                     progress.advance(overall_task)
