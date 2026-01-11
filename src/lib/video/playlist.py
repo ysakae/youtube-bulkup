@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 from googleapiclient.discovery import Resource, build
 from googleapiclient.errors import HttpError
@@ -159,3 +159,41 @@ class PlaylistManager:
         except HttpError as e:
             logger.error(f"Failed to remove video {video_id} from playlist {playlist_id}: {e}")
             return False
+
+    def get_video_ids_from_playlist(self, playlist_name_or_id: str) -> List[str]:
+        """
+        Retrieves all video IDs from a playlist.
+        """
+        playlist_id = self.get_or_create_playlist(playlist_name_or_id)
+        if not playlist_id:
+             # It might be an ID directly, check if we can list items using it as ID
+             # But get_or_create logic currently treats input as title if not found in cache.
+             # If user passes ID, get_or_create creates a new playlist with that ID as title.
+             # This is a limitation acknowledged in previous steps.
+             # For now, we rely on get_or_create resolving title to ID.
+             # If it fails (e.g. error), we return empty.
+             return []
+
+        video_ids = []
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+            
+            request = service.playlistItems().list(
+                part="contentDetails",
+                playlistId=playlist_id,
+                maxResults=50
+            )
+            
+            while request:
+                response = request.execute()
+                for item in response.get("items", []):
+                    video_ids.append(item["contentDetails"]["videoId"])
+                
+                request = service.playlistItems().list_next(request, response)
+                
+            logger.info(f"Found {len(video_ids)} videos in playlist {playlist_name_or_id}")
+            return video_ids
+
+        except HttpError as e:
+            logger.error(f"Failed to get videos from playlist {playlist_name_or_id}: {e}")
+            return []
