@@ -61,5 +61,51 @@ class TestPlaylistManager(unittest.TestCase):
         mock_service.playlistItems().insert.assert_called()
         mock_build.assert_called()
 
+    @patch("src.lib.video.playlist.build")
+    def test_remove_video_from_playlist(self, mock_build):
+        # Setup mocks
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # Mocking list response to find playlistItem
+        mock_list = MagicMock()
+        mock_service.playlistItems().list.return_value = mock_list
+        mock_list.execute.return_value = {
+            "items": [{"id": "playlist_item_id_123"}]
+        }
+        
+        # Mocking delete
+        mock_delete = MagicMock()
+        mock_service.playlistItems().delete.return_value = mock_delete
+        
+        # Execute
+        result = self.manager.remove_video_from_playlist("playlist_id_abc", "video_id_xyz")
+        
+        # Verify
+        self.assertTrue(result)
+        mock_service.playlistItems().list.assert_called_with(
+            part="id",
+            playlistId="playlist_id_abc",
+            videoId="video_id_xyz"
+        )
+        mock_service.playlistItems().delete.assert_called_with(id="playlist_item_id_123")
+        mock_delete.execute.assert_called_once()
+        
+    @patch("src.lib.video.playlist.build")
+    def test_remove_video_from_playlist_not_found(self, mock_build):
+        # Setup mocks
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # Mocking list response to return empty items
+        mock_service.playlistItems().list().execute.return_value = {"items": []}
+        
+        # Execute
+        result = self.manager.remove_video_from_playlist("playlist_id_abc", "video_id_xyz")
+        
+        # Verify
+        self.assertFalse(result)
+        mock_service.playlistItems().delete.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()

@@ -123,3 +123,39 @@ class PlaylistManager:
             
             logger.error(f"Failed to add video {video_id} to playlist {playlist_id}: {e}")
             return False
+
+    def remove_video_from_playlist(self, playlist_id: str, video_id: str) -> bool:
+        """
+        Removes a video from a specific playlist.
+        Requires finding the playlistItemId first.
+        """
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+            
+            # 1. Find the playlistItem ID for this video in this playlist
+            # API doesn't let us delete by videoId directly, we need the item ID.
+            request = service.playlistItems().list(
+                part="id",
+                playlistId=playlist_id,
+                videoId=video_id
+            )
+            response = request.execute()
+            items = response.get("items", [])
+            
+            if not items:
+                logger.warning(f"Video {video_id} not found in playlist {playlist_id}")
+                return False
+                
+            # There could theoretically be duplicates, we remove the first one found
+            playlist_item_id = items[0]["id"]
+            
+            # 2. Delete the playlist item
+            delete_request = service.playlistItems().delete(id=playlist_item_id)
+            delete_request.execute()
+            
+            logger.info(f"Removed video {video_id} from playlist {playlist_id}")
+            return True
+
+        except HttpError as e:
+            logger.error(f"Failed to remove video {video_id} from playlist {playlist_id}: {e}")
+            return False

@@ -2,7 +2,7 @@ import logging
 import typer
 from rich.console import Console
 
-from .commands import auth, history, upload, reupload, retry, sync, quota
+from .commands import auth, history, upload, reupload, retry, sync, quota, playlist, video
 
 app = typer.Typer(help="YouTube Bulk Uploader CLI", add_completion=False)
 console = Console()
@@ -16,6 +16,8 @@ app.add_typer(reupload.app)
 app.add_typer(retry.app)
 app.add_typer(sync.app)
 app.add_typer(quota.app)
+app.add_typer(playlist.app, name="playlist")
+app.add_typer(video.app, name="video")
 
 if __name__ == "__main__":
     app()
