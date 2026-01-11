@@ -82,5 +82,20 @@ class TestVideoCommand(unittest.TestCase):
          self.assertEqual(result.exit_code, 0)
          mock_idx_mgr.update_thumbnail.assert_called_with("VID123", "./thumb.jpg")
 
+    @patch("src.commands.video.get_credentials")
+    @patch("src.commands.video.VideoManager")
+    def test_delete_video_success(self, MockVideoManager, mock_get_credentials):
+         mock_creds = MagicMock()
+         mock_get_credentials.return_value = mock_creds
+         
+         mock_idx_mgr = MockVideoManager.return_value
+         mock_idx_mgr.delete_video.return_value = True
+         
+         # Test with -y option to skip prompt
+         result = runner.invoke(app, ["video", "delete-video", "VID123", "-y"])
+         
+         self.assertEqual(result.exit_code, 0)
+         mock_idx_mgr.delete_video.assert_called_with("VID123")
+
 if __name__ == "__main__":
     unittest.main()

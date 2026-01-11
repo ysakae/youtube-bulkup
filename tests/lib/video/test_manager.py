@@ -134,3 +134,23 @@ class TestVideoManager(unittest.TestCase):
             videoId="vid123",
             media_body=mock_media_file.return_value
         )
+
+    @patch("src.lib.video.manager.build")
+    def test_delete_video_success(self, mock_build):
+        # Setup mocks
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_videos = MagicMock()
+        mock_service.videos.return_value = mock_videos
+        
+        mock_delete = MagicMock()
+        mock_videos.delete.return_value = mock_delete
+        mock_delete.execute.return_value = {}
+
+        # Execute
+        result = self.manager.delete_video("vid123")
+
+        # Verify
+        self.assertTrue(result)
+        mock_videos.delete.assert_called_with(id="vid123")

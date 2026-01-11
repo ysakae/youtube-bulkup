@@ -127,3 +127,21 @@ class VideoManager:
         except HttpError as e:
             logger.error(f"Failed to update thumbnail for {video_id}: {e}")
             return False
+
+    def delete_video(self, video_id: str) -> bool:
+        """
+        Deletes a video from YouTube.
+        """
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+            
+            request = service.videos().delete(
+                id=video_id
+            )
+            request.execute()
+            
+            logger.info(f"Deleted video {video_id}")
+            return True
+        except HttpError as e:
+            logger.error(f"Failed to delete video {video_id}: {e}")
+            return False

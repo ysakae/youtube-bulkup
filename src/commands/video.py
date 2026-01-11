@@ -155,3 +155,27 @@ def update_thumbnail(
     else:
         console.print(f"[red]Failed to update thumbnail.[/]")
         raise typer.Exit(code=1)
+
+@app.command("delete-video")
+def delete_video(
+    video_id: str = typer.Argument(..., help="YouTube Video ID"),
+    force: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """
+    Delete a video from YouTube.
+    
+    WARNING: This action is irreversible.
+    """
+    setup_logging(level="INFO")
+    manager = _get_manager()
+    
+    if not force:
+        if not typer.confirm(f"Are you sure you want to delete video {video_id}?"):
+            console.print("[yellow]Aborted.[/]")
+            raise typer.Abort()
+
+    if manager.delete_video(video_id):
+        console.print(f"[green]Successfully deleted video {video_id}[/]")
+    else:
+        console.print(f"[red]Failed to delete video.[/]")
+        raise typer.Exit(code=1)
