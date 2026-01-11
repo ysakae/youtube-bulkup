@@ -78,3 +78,60 @@ def update_privacy(
         else:
             console.print(f"[red]Failed to update privacy status.[/]")
             raise typer.Exit(code=1)
+
+@app.command("update-meta")
+def update_meta(
+    target: str = typer.Argument(..., help="YouTube Video ID or 'all' if using --playlist"),
+    title: str = typer.Option(None, "--title", help="New title"),
+    description: str = typer.Option(None, "--desc", help="New description"),
+    tags: str = typer.Option(None, "--tags", help="Comma separated tags"),
+    category: str = typer.Option(None, "--category", help="New category ID"),
+    playlist: str = typer.Option(None, "--playlist", help="Target playlist for bulk update"),
+):
+    """
+    Update metadata (title, description, tags, category) for a video or a playlist.
+    
+    Example:
+      yt-up video update-meta <VIDEO_ID> --title "New Title" --tags "tag1,tag2"
+    """
+    setup_logging(level="INFO")
+    manager = _get_manager()
+    
+    # helper to parse tags
+    tag_list = tags.split(",") if tags else None
+    
+    if playlist:
+        if target != "all":
+            console.print("[yellow]Warning: 'target' argument is ignored when --playlist is used, but normally set to 'all' for clarity.[/]")
+        
+        console.print(f"[bold]Fetching videos from playlist: {playlist}...[/]")
+        pl_manager = _get_playlist_manager()
+        video_ids = pl_manager.get_video_ids_from_playlist(playlist)
+        
+        if not video_ids:
+            console.print(f"[red]No videos found in playlist {playlist} (or failed to retrieve).[/]")
+            raise typer.Exit(code=1)
+            
+        success_count = 0
+        fail_count = 0
+        
+        with console.status(f"[bold green]Updating metadata for {len(video_ids)} videos..."):
+            for vid in video_ids:
+                if manager.update_metadata(vid, title=title, description=description, tags=tag_list, category_id=category):
+                    console.print(f"[green]✔ Updated {vid}[/]")
+                    success_count += 1
+                else:
+                    console.print(f"[red]✖ Failed {vid}[/]")
+                    fail_count += 1
+        
+        console.print(f"\n[bold]Bulk Update Complete:[/] {success_count} success, {fail_count} failed.")
+        if fail_count > 0:
+            raise typer.Exit(code=1)
+    
+    else:
+        # Single video mode
+        if manager.update_metadata(target, title=title, description=description, tags=tag_list, category_id=category):
+             console.print(f"[green]Successfully updated metadata for {target}[/]")
+        else:
+             console.print(f"[red]Failed to update metadata.[/]")
+             raise typer.Exit(code=1)

@@ -45,3 +45,65 @@ class VideoManager:
         except HttpError as e:
             logger.error(f"Failed to update privacy status for {video_id}: {e}")
             return False
+
+    def update_metadata(
+        self,
+        video_id: str,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        tags: Optional[list] = None,
+        category_id: Optional[str] = None
+    ) -> bool:
+        """
+        Updates metadata for a video. Fetches current snippet first to preserve other fields.
+        """
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+            
+            # 1. Get current snippet
+            request = service.videos().list(
+                part="snippet",
+                id=video_id
+            )
+            response = request.execute()
+            items = response.get("items", [])
+            
+            if not items:
+                logger.error(f"Video {video_id} not found.")
+                return False
+                
+            snippet = items[0]["snippet"]
+            
+            # 2. Update fields if provided
+            if title:
+                snippet["title"] = title
+            if description:
+                snippet["description"] = description
+            if tags is not None:
+                snippet["tags"] = tags
+            if category_id:
+                snippet["categoryId"] = category_id
+                
+            # 3. specific update
+            update_body = {
+                "id": video_id,
+                "snippet": {
+                    "title": snippet["title"],
+                    "description": snippet["description"],
+                    "tags": snippet.get("tags", []),
+                    "categoryId": snippet["categoryId"]
+                }
+            }
+            
+            update_request = service.videos().update(
+                part="snippet",
+                body=update_body
+            )
+            update_request.execute()
+            
+            logger.info(f"Updated metadata for {video_id}")
+            return True
+
+        except HttpError as e:
+            logger.error(f"Failed to update metadata for {video_id}: {e}")
+            return False
