@@ -135,3 +135,23 @@ def update_meta(
         else:
              console.print(f"[red]Failed to update metadata.[/]")
              raise typer.Exit(code=1)
+
+@app.command("update-thumbnail")
+def update_thumbnail(
+    video_id: str = typer.Argument(..., help="YouTube Video ID"),
+    image_path: str = typer.Argument(..., help="Path to the thumbnail image file"),
+):
+    """
+    Update the thumbnail of a video.
+    
+    Example:
+      yt-up video update-thumbnail <VIDEO_ID> ./new_thumb.jpg
+    """
+    setup_logging(level="INFO")
+    manager = _get_manager()
+    
+    if manager.update_thumbnail(video_id, image_path):
+        console.print(f"[green]Successfully updated thumbnail for {video_id}[/]")
+    else:
+        console.print(f"[red]Failed to update thumbnail.[/]")
+        raise typer.Exit(code=1)

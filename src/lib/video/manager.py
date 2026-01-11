@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
 
 logger = logging.getLogger("youtube_up")
 
@@ -106,4 +107,23 @@ class VideoManager:
 
         except HttpError as e:
             logger.error(f"Failed to update metadata for {video_id}: {e}")
+            return False
+
+    def update_thumbnail(self, video_id: str, image_path: str) -> bool:
+        """
+        Updates the thumbnail of a video.
+        """
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+            
+            request = service.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(image_path)
+            )
+            request.execute()
+            
+            logger.info(f"Updated thumbnail for {video_id} from {image_path}")
+            return True
+        except HttpError as e:
+            logger.error(f"Failed to update thumbnail for {video_id}: {e}")
             return False

@@ -57,3 +57,80 @@ class TestVideoManager(unittest.TestCase):
 
         # Verify
         self.assertFalse(result)
+
+    @patch("src.lib.video.manager.build")
+    def test_update_metadata_success(self, mock_build):
+        # Setup mocks
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_videos = MagicMock()
+        mock_service.videos.return_value = mock_videos
+        
+        # list() response
+        mock_list = MagicMock()
+        mock_videos.list.return_value = mock_list
+        mock_list.execute.return_value = {
+            "items": [{
+                "snippet": {
+                    "title": "Old Title",
+                    "description": "Old Desc",
+                    "tags": ["old"],
+                    "categoryId": "22"
+                }
+            }]
+        }
+        
+        # update() response
+        mock_update = MagicMock()
+        mock_videos.update.return_value = mock_update
+        mock_update.execute.return_value = {}
+
+        # Execute
+        result = self.manager.update_metadata(
+            "test_video_id",
+            title="New Title",
+            description="New Desc",
+            tags=["new"],
+            category_id="25"
+        )
+
+        # Verify
+        self.assertTrue(result)
+        mock_videos.update.assert_called_with(
+            part="snippet",
+            body={
+                "id": "test_video_id",
+                "snippet": {
+                    "title": "New Title",
+                    "description": "New Desc",
+                    "tags": ["new"],
+                    "categoryId": "25"
+                }
+            }
+        )
+
+    @patch("src.lib.video.manager.build")
+    @patch("src.lib.video.manager.MediaFileUpload")
+    def test_update_thumbnail_success(self, mock_media_file, mock_build):
+        # Setup mocks
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_thumbnails = MagicMock()
+        mock_service.thumbnails.return_value = mock_thumbnails
+        
+        mock_set = MagicMock()
+        mock_thumbnails.set.return_value = mock_set
+        mock_set.execute.return_value = {}
+
+        # Execute
+        result = self.manager.update_thumbnail("vid123", "/path/to/image.jpg")
+
+        # Verify
+        self.assertTrue(result)
+        mock_media_file.assert_called_with("/path/to/image.jpg")
+        mock_thumbnails.set.assert_called_with(
+            videoId="vid123",
+            media_body=mock_media_file.return_value
+        )
