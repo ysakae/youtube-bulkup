@@ -16,7 +16,6 @@ class HistoryManager:
             self.db_path, indent=4, separators=(",", ": "), encoding="utf-8"
         )
         self.table = self.db.table("uploads")
-        self.table = self.db.table("uploads")
         self._migrate_schema_v2()
         self._migrate_schema_v3()
 

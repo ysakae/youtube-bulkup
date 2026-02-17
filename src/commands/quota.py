@@ -1,10 +1,9 @@
 
+from datetime import date, datetime
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
-from rich.table import Table
-from datetime import datetime, date
-import time
 
 from ..lib.data.history import HistoryManager
 

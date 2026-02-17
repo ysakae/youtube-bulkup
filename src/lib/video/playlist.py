@@ -1,10 +1,8 @@
 import logging
-from typing import Dict, Optional, Any, List
+from typing import Dict, List, Optional
 
-from googleapiclient.discovery import Resource, build
+from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
-from ..core.config import config
 
 logger = logging.getLogger("youtube_up")
 

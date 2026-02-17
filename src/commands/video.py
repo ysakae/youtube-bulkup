@@ -2,9 +2,9 @@ import typer
 from rich.console import Console
 
 from ..lib.auth.auth import get_credentials
+from ..lib.core.logger import setup_logging
 from ..lib.video.manager import VideoManager
 from ..lib.video.playlist import PlaylistManager
-from ..lib.core.logger import setup_logging
 
 app = typer.Typer(help="Manage videos.")
 console = Console()
@@ -76,7 +76,7 @@ def update_privacy(
         if manager.update_privacy_status(target, status):
             console.print(f"[green]Successfully updated {target} to {status}[/]")
         else:
-            console.print(f"[red]Failed to update privacy status.[/]")
+            console.print("[red]Failed to update privacy status.[/]")
             raise typer.Exit(code=1)
 
 @app.command("update-meta")
@@ -133,7 +133,7 @@ def update_meta(
         if manager.update_metadata(target, title=title, description=description, tags=tag_list, category_id=category):
              console.print(f"[green]Successfully updated metadata for {target}[/]")
         else:
-             console.print(f"[red]Failed to update metadata.[/]")
+             console.print("[red]Failed to update metadata.[/]")
              raise typer.Exit(code=1)
 
 @app.command("update-thumbnail")
@@ -153,7 +153,7 @@ def update_thumbnail(
     if manager.update_thumbnail(video_id, image_path):
         console.print(f"[green]Successfully updated thumbnail for {video_id}[/]")
     else:
-        console.print(f"[red]Failed to update thumbnail.[/]")
+        console.print("[red]Failed to update thumbnail.[/]")
         raise typer.Exit(code=1)
 
 @app.command("delete-video")
@@ -177,5 +177,5 @@ def delete_video(
     if manager.delete_video(video_id):
         console.print(f"[green]Successfully deleted video {video_id}[/]")
     else:
-        console.print(f"[red]Failed to delete video.[/]")
+        console.print("[red]Failed to delete video.[/]")
         raise typer.Exit(code=1)

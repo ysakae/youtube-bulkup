@@ -1,9 +1,10 @@
+from datetime import datetime
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from pathlib import Path
-from datetime import datetime
 
 from ..lib.data.history import HistoryManager
 
@@ -106,33 +107,28 @@ def delete(
     Exact match is required.
     """
     history_manager = HistoryManager()
-    deleted = False
 
     if path:
         # Resolve to absolute path for consistency if stored that way
         abs_path = path.resolve()
         if history_manager.delete_record_by_path(str(abs_path)):
             console.print(f"[green]Deleted history for path: {abs_path}[/]")
-            deleted = True
         else:
             # Try raw input string just in case
             if history_manager.delete_record_by_path(str(path)):
                  console.print(f"[green]Deleted history for path: {path}[/]")
-                 deleted = True
             else:
                  console.print(f"[red]No record found for path: {path}[/]")
 
     if hash_val:
         if history_manager.delete_record(hash_val):
             console.print(f"[green]Deleted history for hash: {hash_val}[/]")
-            deleted = True
         else:
             console.print(f"[red]No record found for hash: {hash_val}[/]")
     
     if video_id:
         if history_manager.delete_record_by_video_id(video_id):
             console.print(f"[green]Deleted history for Video ID: {video_id}[/]")
-            deleted = True
         else:
             console.print(f"[red]No record found for Video ID: {video_id}[/]")
 

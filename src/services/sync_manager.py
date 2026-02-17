@@ -1,5 +1,6 @@
 import logging
-from typing import Dict, List, Set, Any, Tuple
+from typing import Any, Dict, List, Tuple
+
 from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
 

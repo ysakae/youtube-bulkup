@@ -4,7 +4,7 @@ import socket
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from googleapiclient.discovery import Resource, build
+from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from tenacity import (

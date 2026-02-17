@@ -1,10 +1,11 @@
 import asyncio
+
 import typer
 from rich.console import Console
 
 from ..lib.auth.auth import get_credentials
-from ..lib.data.history import HistoryManager
 from ..lib.core.logger import setup_logging
+from ..lib.data.history import HistoryManager
 from ..lib.video.metadata import FileMetadataGenerator
 from ..lib.video.uploader import VideoUploader
 from ..services.upload_manager import orchestrate_upload
@@ -47,8 +48,7 @@ def upload(
     history = HistoryManager()
     meta_gen = FileMetadataGenerator()
 
-    # Run async orchestrator
-    # Run async orchestrator
+    # 非同期オーケストレーターを実行
     asyncio.run(
         orchestrate_upload(
             directory,

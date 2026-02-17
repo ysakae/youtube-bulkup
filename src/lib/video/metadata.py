@@ -1,9 +1,9 @@
 import logging
-import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from hachoir.parser import createParser
+from typing import Any, Dict
+
 from hachoir.metadata import extractMetadata
+from hachoir.parser import createParser
 
 logger = logging.getLogger("youtube_up")
 

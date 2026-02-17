@@ -1,11 +1,11 @@
 import typer
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 
 from ..lib.auth.auth import get_authenticated_service
-from ..lib.data.history import HistoryManager
 from ..lib.core.logger import setup_logging
+from ..lib.data.history import HistoryManager
 from ..services.sync_manager import SyncManager
 
 app = typer.Typer(help="Synchronize local history with YouTube.")

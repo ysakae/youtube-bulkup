@@ -5,7 +5,7 @@ description = "Efficient YouTube Bulk Uploader with Automated Metadata Extractio
 authors = [
     {name = "Antigravity", email = "antigravity@google.com"},
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "typer>=0.9.0",
     "rich>=13.7.0",

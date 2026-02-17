@@ -1,8 +1,8 @@
 import asyncio
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import List
-from collections import defaultdict
 
 from googleapiclient.errors import HttpError
 from rich.console import Console
@@ -16,12 +16,12 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from ..lib.video.metadata import FileMetadataGenerator
+from ..lib.core.config import config
 from ..lib.data.history import HistoryManager
+from ..lib.video.metadata import FileMetadataGenerator
+from ..lib.video.playlist import PlaylistManager
 from ..lib.video.scanner import calculate_hash, scan_directory
 from ..lib.video.uploader import VideoUploader
-from ..lib.video.playlist import PlaylistManager
-from ..lib.core.config import config
 
 logger = logging.getLogger("youtube_up")
 console = Console()
@@ -43,7 +43,7 @@ async def process_video_files(
     """
     if not video_files:
         console.print("[yellow]No files to process.[/]")
-        return
+        return False
 
     # Setup Progress Dushboard
     with Progress(

@@ -8,12 +8,12 @@ from googleapiclient.discovery import Resource, build
 
 from ..core.config import config
 from .profiles import (
+    delete_profile_token,
     ensure_tokens_dir,
     get_active_profile,
     get_profile_path,
     migrate_legacy_token,
     set_active_profile,
-    delete_profile_token,
 )
 
 logger = logging.getLogger("youtube_up")

@@ -62,18 +62,22 @@ class TestMain:
         assert "* default" in result.stdout
         assert "  other" in result.stdout
 
-    def test_upload_dry_run(self, mocker):
+    def test_upload_dry_run(self, mocker, tmp_path):
         """Test upload command in dry-run mode."""
+        # 実ファイルを作成することで stat() の FileNotFoundError を回避
+        video_file = tmp_path / "video.mp4"
+        video_file.touch()
+
         mocker.patch("src.lib.core.logger.setup_logging")
-        mocker.patch("src.services.upload_manager.scan_directory", return_value=[Path("video.mp4")])
+        mocker.patch("src.services.upload_manager.scan_directory", return_value=[video_file])
         mocker.patch("src.services.upload_manager.calculate_hash", return_value="hash123")
 
-        # Mock History
+        # History モック
         mock_hist = MagicMock()
         mock_hist.is_uploaded.return_value = False
         mocker.patch("src.commands.upload.HistoryManager", return_value=mock_hist)
 
-        # Mock Metadata logic
+        # Metadata モック
         mock_meta = MagicMock()
         mock_meta.generate = MagicMock(
             return_value={
@@ -85,18 +89,11 @@ class TestMain:
         )
         mocker.patch("src.commands.upload.FileMetadataGenerator", return_value=mock_meta)
 
-        # Mock orchestrator to avoid actual async loop issues in CliRunner if not careful,
-        # but main.py calls asyncio.run(), so catching it there via mocking the internal parts is better.
-        # Actually proper integration test would let it run.
-        # But we need to mock asyncio.run or the coroutine?
-        # main.py does `asyncio.run(orchestrate_upload(...))`
-        # We can let it run since we mocked the inner blocking/async calls.
-
         result = runner.invoke(app, ["upload", "./test_dir", "--dry-run"])
 
         assert result.exit_code == 0
         assert "Found 1 video files" in result.stdout
-        # output is rich, so might be formatted. check key phrases.
+        # richフォーマットのため、キーフレーズのみチェック
         assert "File Title" in result.stdout
 
     def test_upload_real_run(self, mocker, tmp_path):

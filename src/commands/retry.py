@@ -1,12 +1,13 @@
 import asyncio
-import typer
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+
+import typer
 from rich.console import Console
 
 from ..lib.auth.auth import get_credentials
-from ..lib.data.history import HistoryManager
 from ..lib.core.logger import setup_logging
+from ..lib.data.history import HistoryManager
 from ..lib.video.metadata import FileMetadataGenerator
 from ..lib.video.uploader import VideoUploader
 from ..services.upload_manager import process_video_files

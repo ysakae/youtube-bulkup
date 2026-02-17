@@ -73,7 +73,7 @@ upload:
   chunk_size: 4194304  # 4MB (ネットワーク環境に応じて調整)
   retry_count: 5       # 失敗時の最大リトライ回数
   privacy_status: "private" # private, public, unlisted
-
+```
 
 ## 使い方
 
@@ -117,8 +117,6 @@ yt-up reupload --video-id <VIDEO_ID>
 # ドライラン（履歴削除を行わずにシミュレーション）
 yt-up reupload ./my_videos/video.mp4 --dry-run
 ```
-
-- `--playlist / -p`: 再アップロード時にプレイリストを指定（または上書き）できます。
 
 - `--playlist / -p`: 再アップロード時にプレイリストを指定（または上書き）できます。
 

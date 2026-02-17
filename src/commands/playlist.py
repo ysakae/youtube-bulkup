@@ -2,8 +2,8 @@ import typer
 from rich.console import Console
 
 from ..lib.auth.auth import get_credentials
-from ..lib.video.playlist import PlaylistManager
 from ..lib.core.logger import setup_logging
+from ..lib.video.playlist import PlaylistManager
 
 app = typer.Typer(help="Manage playlists.")
 console = Console()
@@ -51,7 +51,7 @@ def add_video(
     if manager.add_video_to_playlist(playlist_id, video_id):
         console.print(f"[green]Successfully added {video_id} to playlist {playlist_name_or_id} ({playlist_id})[/]")
     else:
-        console.print(f"[red]Failed to add video to playlist.[/]")
+        console.print("[red]Failed to add video to playlist.[/]")
         raise typer.Exit(code=1)
 
 @app.command("remove")
@@ -65,28 +65,17 @@ def remove_video(
     setup_logging(level="INFO")
     manager = _get_manager()
     
-    # We need playlist ID. 
-    # If user provided a name, we try to resolve it via cache/list?
-    # The current `get_or_create` creates if not exists, which is NOT what we want for removal.
-    # We need a `get_playlist_id_by_title` or similar.
-    # But `get_or_create` does cache population.
-    # If we use `get_or_create`, we might accidentally create a playlist if it doesn't exist, which is weird for remove command but maybe acceptable?
-    # No, creating a playlist just to fail removing a video from it is silly.
-    
-    # Let's trust `get_or_create` for now as it handles the name resolution, 
-    # but strictly we should probably add `get_playlist_id` to the library later.
-    # For now, if the user passes the exact title of an EXISTING playlist, `get_or_create` returns its ID.
-    
-    playlist_id = manager.get_or_create_playlist(playlist_name_or_id)
+    # プレイリスト名からIDを解決（存在しない場合は新規作成しない）
+    playlist_id = manager.find_playlist_id(playlist_name_or_id)
     
     if not playlist_id:
-        console.print(f"[red]Playlist not found (or failed to create?): {playlist_name_or_id}[/]")
+        console.print(f"[red]Playlist not found: {playlist_name_or_id}[/]")
         raise typer.Exit(code=1)
         
     if manager.remove_video_from_playlist(playlist_id, video_id):
         console.print(f"[green]Successfully removed {video_id} from playlist {playlist_name_or_id}[/]")
     else:
-        console.print(f"[red]Failed to remove video from playlist (maybe not found?).[/]")
+        console.print("[red]Failed to remove video from playlist (maybe not found?).[/]")
         raise typer.Exit(code=1)
 
 @app.command("rename")
@@ -103,7 +92,7 @@ def rename_playlist(
     if manager.rename_playlist(old_name_or_id, new_name):
         console.print(f"[green]Successfully renamed playlist to '{new_name}'[/]")
     else:
-        console.print(f"[red]Failed to rename playlist.[/]")
+        console.print("[red]Failed to rename playlist.[/]")
         raise typer.Exit(code=1)
 
 @app.command("orphans")
