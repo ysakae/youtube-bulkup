@@ -5,6 +5,9 @@ __pycache__/
 *.pickle
 client_secrets.json
 upload_history.json
+upload_history.db
+upload_history.db-wal
+upload_history.db-shm
 # Logs and temporary files
 *.log
 test_output.txt

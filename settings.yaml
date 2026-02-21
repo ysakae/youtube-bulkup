@@ -17,7 +17,7 @@ upload:
 
 
 # Database path
-history_db: "upload_history.json"
+history_db: "upload_history.db"
 
 # Metadata templates
 # 利用可能な変数: {folder}, {stem}, {filename}, {date}, {year}, {index}, {total}

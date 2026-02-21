@@ -40,7 +40,7 @@ class AppConfig(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     upload: UploadConfig = Field(default_factory=UploadConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
-    history_db: str = "upload_history.json"
+    history_db: str = "upload_history.db"
 
     @classmethod
     def load(cls, path: str = "settings.yaml") -> "AppConfig":
