@@ -140,45 +140,50 @@ class FileMetadataGenerator:
             "recordingDetails": recording_details
         }
 
-    def _extract_raw_metadata(self, file_path: Path) -> Dict[str, Any]:
-        """
-        Uses hachoir to extract creation date, duration, and GPS data.
-        """
+    def _extract_hachoir_metadata(self, file_path: Path) -> Dict[str, Any]:
+        """Extra metadata using hachoir."""
         info = {}
         parser = None
         try:
             parser = createParser(str(file_path))
             if not parser:
                 logger.warning(f"Unable to parse file: {file_path}")
-                # Continue to fallback
-            else:
-                metadata = extractMetadata(parser)
-                if not metadata:
-                    logger.warning(f"No metadata found for: {file_path}")
-                else:
-                    # Extract Creation Date
-                    if metadata.has("creation_date"):
-                        info["creation_date"] = metadata.get("creation_date")
-                    
-                    # Extract Duration
-                    if metadata.has("duration"):
-                        info["duration"] = metadata.get("duration")
+                return info
+                
+            metadata = extractMetadata(parser)
+            if not metadata:
+                logger.warning(f"No metadata found for: {file_path}")
+                return info
+            
+            # Extract Creation Date
+            if metadata.has("creation_date"):
+                info["creation_date"] = metadata.get("creation_date")
+            
+            # Extract Duration
+            if metadata.has("duration"):
+                info["duration"] = metadata.get("duration")
 
-                    # Extract GPS Data
-                    # Note: The keys depend on hachoir's parser implementation for specific file types.
-                    # Common keys are 'latitude', 'longitude', 'altitude'.
-                    if metadata.has("latitude"):
-                        info["latitude"] = metadata.get("latitude")
-                    if metadata.has("longitude"):
-                        info["longitude"] = metadata.get("longitude")
-                    if metadata.has("altitude"):
-                        info["altitude"] = metadata.get("altitude")
+            # Extract GPS Data
+            if metadata.has("latitude"):
+                info["latitude"] = metadata.get("latitude")
+            if metadata.has("longitude"):
+                info["longitude"] = metadata.get("longitude")
+            if metadata.has("altitude"):
+                info["altitude"] = metadata.get("altitude")
 
         except Exception as e:
             logger.error(f"Error extracting metadata for {file_path}: {e}")
         finally:
             if parser:
                 parser.close()
+                
+        return info
+
+    def _extract_raw_metadata(self, file_path: Path) -> Dict[str, Any]:
+        """
+        Uses hachoir to extract creation date, duration, and GPS data.
+        """
+        info = self._extract_hachoir_metadata(file_path)
         
         # Fallback: If no GPS data from hachoir, try binary scan
         if "latitude" not in info:

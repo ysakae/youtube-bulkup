@@ -16,31 +16,7 @@ from ..services.upload_manager import process_video_files
 app = typer.Typer(help="Re-upload videos.")
 console = Console()
 
-@app.command("reupload")
-def reupload(
-    files: List[Path] = typer.Argument(None, help="Files to re-upload (must exist locally)"),
-    hashes: List[str] = typer.Option(None, "--hash", help="File hashes to re-upload"),
-    video_ids: List[str] = typer.Option(None, "--video-id", help="Video IDs to re-upload"),
-    workers: int = typer.Option(
-        1, help="Number of concurrent uploads (careful with quota!)"
-    ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Simulate re-upload without deleting history or uploading"
-    ),
-    playlist: str = typer.Option(
-        None, "--playlist", "-p", help="Playlist name (defaults to folder name)"
-    ),
-):
-    """
-    Force re-upload of specific files by clearing their history.
-    """
-    setup_logging(level="INFO")
-
-    if not files and not hashes and not video_ids:
-        console.print("[yellow]No files, hashes, or video IDs provided.[/]")
-        return
-
-    history = HistoryManager()
+def _resolve_files_to_reupload(files: List[Path], hashes: List[str], video_ids: List[str], history: HistoryManager, console: Console) -> set:
     valid_files = set()
 
     # Resolve files from paths
@@ -76,6 +52,35 @@ def reupload(
                     console.print(f"[yellow]File for video ID {vid} not found at {f_path}[/]")
             else:
                 console.print(f"[red]No history found for video ID: {vid}[/]")
+                
+    return valid_files
+
+@app.command("reupload")
+def reupload(
+    files: List[Path] = typer.Argument(None, help="Files to re-upload (must exist locally)"),
+    hashes: List[str] = typer.Option(None, "--hash", help="File hashes to re-upload"),
+    video_ids: List[str] = typer.Option(None, "--video-id", help="Video IDs to re-upload"),
+    workers: int = typer.Option(
+        1, help="Number of concurrent uploads (careful with quota!)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Simulate re-upload without deleting history or uploading"
+    ),
+    playlist: str = typer.Option(
+        None, "--playlist", "-p", help="Playlist name (defaults to folder name)"
+    ),
+):
+    """
+    Force re-upload of specific files by clearing their history.
+    """
+    setup_logging(level="INFO")
+
+    if not files and not hashes and not video_ids:
+        console.print("[yellow]No files, hashes, or video IDs provided.[/]")
+        return
+
+    history = HistoryManager()
+    valid_files = _resolve_files_to_reupload(files, hashes, video_ids, history, console)
 
     if not valid_files:
         console.print("[red]No valid files to process.[/]")

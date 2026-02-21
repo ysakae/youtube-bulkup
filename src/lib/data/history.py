@@ -5,7 +5,7 @@ import logging
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..core.config import config
 
@@ -54,6 +54,23 @@ class HistoryManager:
             self.conn.execute(idx_sql)
         self.conn.commit()
 
+    def _extract_records_from_json(self, json_path: Path) -> list:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # TinyDB の形式: {"uploads": {"1": {...}, "2": {...}, ...}}
+        # または {"_default": {...}} の場合もある
+        if isinstance(data, dict):
+            # "uploads" テーブルを探す
+            table_data = data.get("uploads", data.get("_default", {}))
+            if isinstance(table_data, dict):
+                return list(table_data.values())
+            elif isinstance(table_data, list):
+                return table_data
+        elif isinstance(data, list):
+            return data
+        return []
+
     def _migrate_from_tinydb(self):
         """
         既存の TinyDB (JSON) ファイルからデータを自動移行する。
@@ -83,21 +100,7 @@ class HistoryManager:
 
         logger.info(f"TinyDB からの移行を開始: {json_path}")
         try:
-            with open(json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            # TinyDB の形式: {"uploads": {"1": {...}, "2": {...}, ...}}
-            # または {"_default": {...}} の場合もある
-            records = []
-            if isinstance(data, dict):
-                # "uploads" テーブルを探す
-                table_data = data.get("uploads", data.get("_default", {}))
-                if isinstance(table_data, dict):
-                    records = list(table_data.values())
-                elif isinstance(table_data, list):
-                    records = table_data
-            elif isinstance(data, list):
-                records = data
+            records = self._extract_records_from_json(json_path)
 
             if not records:
                 logger.warning("JSONファイルにレコードが見つかりませんでした。")

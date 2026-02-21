@@ -11,6 +11,26 @@ from ..services.sync_manager import SyncManager
 app = typer.Typer(help="Synchronize local history with YouTube.")
 console = Console()
 
+def _print_missing_local(missing_local, console: Console):
+    table = Table(title="Missing in Local (Exists on YouTube but not in local history)")
+    table.add_column("Video ID", style="cyan")
+    table.add_column("Title", style="magenta")
+    for item in missing_local:
+        vid = item['video_id']
+        link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
+        table.add_row(link, item["remote_title"])
+    console.print(table)
+
+def _print_missing_remote(missing_remote, console: Console):
+    table = Table(title="Missing in Remote (Exists in local history but not on YouTube)")
+    table.add_column("Video ID", style="cyan")
+    table.add_column("Local Path", style="dim")
+    for item in missing_remote:
+        vid = item['video_id']
+        link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
+        table.add_row(link, item["local_path"])
+    console.print(table)
+
 @app.command("sync")
 def sync(
     dry_run: bool = typer.Option(
@@ -59,24 +79,10 @@ def sync(
 
     # Show Discrepancies
     if missing_local:
-        table = Table(title="Missing in Local (Exists on YouTube but not in local history)")
-        table.add_column("Video ID", style="cyan")
-        table.add_column("Title", style="magenta")
-        for item in missing_local:
-            vid = item['video_id']
-            link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
-            table.add_row(link, item["remote_title"])
-        console.print(table)
+        _print_missing_local(missing_local, console)
 
     if missing_remote:
-        table = Table(title="Missing in Remote (Exists in local history but not on YouTube)")
-        table.add_column("Video ID", style="cyan")
-        table.add_column("Local Path", style="dim")
-        for item in missing_remote:
-            vid = item['video_id']
-            link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
-            table.add_row(link, item["local_path"])
-        console.print(table)
+        _print_missing_remote(missing_remote, console)
 
     if not missing_local and not missing_remote:
         console.print("[bold green]Local history is perfectly in sync with YouTube![/]")
