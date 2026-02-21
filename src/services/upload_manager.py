@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -44,6 +45,40 @@ async def process_video_files(
     if not video_files:
         console.print("[yellow]No files to process.[/]")
         return False
+
+    # Quota残量チェック（dry-runでない場合のみ）
+    COST_PER_UPLOAD = 1600  # 1動画あたりの推定Quotaコスト(ユニット)
+    if not dry_run:
+        quota_limit = config.upload.daily_quota_limit
+        now = datetime.now()
+        today_start = datetime(now.year, now.month, now.day).timestamp()
+
+        all_records = history.get_all_records(limit=0)
+        today_uploads = [
+            r for r in all_records
+            if r.get("status") == "success" and r.get("timestamp", 0) >= today_start
+        ]
+        used_units = len(today_uploads) * COST_PER_UPLOAD
+        remaining_units = max(0, quota_limit - used_units)
+        max_uploadable = remaining_units // COST_PER_UPLOAD
+
+        if remaining_units < COST_PER_UPLOAD:
+            console.print(
+                f"[bold red]Quota不足: 本日の推定使用量 {used_units:,}/{quota_limit:,} ユニット。"
+                f" 残り {remaining_units:,} ユニットでは1件もアップロードできません。[/]"
+            )
+            console.print("[dim]明日以降に再実行するか、settings.yaml の daily_quota_limit を調整してください。[/]")
+            return False
+        elif max_uploadable < len(video_files):
+            console.print(
+                f"[bold yellow]Quota警告: 推定残量 {remaining_units:,}/{quota_limit:,} ユニット。"
+                f" 最大 {max_uploadable} 件までアップロード可能（対象: {len(video_files)} 件）。[/]"
+            )
+        else:
+            console.print(
+                f"[dim]Quota残量: {remaining_units:,}/{quota_limit:,} ユニット "
+                f"(本日 {len(today_uploads)} 件アップロード済み)[/]"
+            )
 
     # Setup Progress Dushboard
     with Progress(

@@ -1,5 +1,6 @@
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from ..lib.auth.auth import get_credentials
 from ..lib.core.logger import setup_logging
@@ -15,6 +16,53 @@ def _get_manager():
     except Exception as e:
         console.print(f"[bold red]Auth Error:[/] {e}")
         raise typer.Exit(code=1)
+
+@app.command("list")
+def list_playlists(
+    name: str = typer.Argument(None, help="Playlist name or ID to show details"),
+):
+    """
+    プレイリストの一覧を表示する。
+    名前またはIDを指定すると、そのプレイリスト内の動画一覧を表示する。
+    """
+    setup_logging(level="INFO")
+    manager = _get_manager()
+
+    if name:
+        # 指定プレイリストの動画一覧
+        items = manager.list_playlist_items(name)
+        if not items:
+            console.print(f"[yellow]No videos found in playlist: {name}[/]")
+            return
+
+        table = Table(title=f"Playlist: {name} ({len(items)} videos)")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Title", style="magenta")
+        table.add_column("Video ID", style="cyan")
+
+        for item in items:
+            vid = item["video_id"]
+            link = f"[link=https://youtu.be/{vid}]{vid}[/link]"
+            table.add_row(str(item["position"] + 1), item["title"], link)
+
+        console.print(table)
+    else:
+        # 全プレイリスト一覧
+        playlists = manager.list_playlists()
+        if not playlists:
+            console.print("[yellow]No playlists found.[/]")
+            return
+
+        table = Table(title=f"Playlists ({len(playlists)} total)")
+        table.add_column("Title", style="magenta")
+        table.add_column("ID", style="cyan")
+        table.add_column("Videos", style="green", justify="right")
+        table.add_column("Privacy", style="dim")
+
+        for pl in playlists:
+            table.add_row(pl["title"], pl["id"], str(pl["item_count"]), pl["privacy"])
+
+        console.print(table)
 
 @app.command("add")
 def add_video(

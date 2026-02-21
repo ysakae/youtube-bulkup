@@ -13,6 +13,7 @@ upload:
   chunk_size: 4194304
   retry_count: 5
   privacy_status: "private"  # private, public, unlisted
+  daily_quota_limit: 10000   # YouTube API daily quota limit (units)
 
 
 # Database path

@@ -16,6 +16,12 @@ def sync(
     dry_run: bool = typer.Option(
         True, "--dry-run", help="Currently only supports dry-run (report only)."
     ),
+    fix: bool = typer.Option(
+        False, "--fix", help="Remove local-only records (videos deleted from YouTube)."
+    ),
+    yes: bool = typer.Option(
+        False, "-y", "--yes", help="Skip confirmation prompt for --fix."
+    ),
 ):
     """
     Compare local history with actual YouTube uploads.
@@ -74,3 +80,20 @@ def sync(
 
     if not missing_local and not missing_remote:
         console.print("[bold green]Local history is perfectly in sync with YouTube![/]")
+        return
+
+    # --fix: ローカルにだけあるレコードを削除
+    if fix and missing_remote:
+        console.print(f"\n[bold yellow]--fix: {len(missing_remote)} local-only records will be deleted.[/]")
+
+        if not yes:
+            if not typer.confirm("Continue?"):
+                console.print("[yellow]Aborted.[/]")
+                raise typer.Abort()
+
+        deleted, failed = manager.fix_missing_remote(missing_remote)
+        console.print(
+            f"[green]Fix complete:[/] {deleted} deleted, {failed} failed"
+        )
+    elif fix and not missing_remote:
+        console.print("[green]No local-only records to fix.[/]")

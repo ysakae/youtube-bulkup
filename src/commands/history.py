@@ -1,3 +1,5 @@
+import csv
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -134,3 +136,78 @@ def delete(
 
     if not path and not hash_val and not video_id:
         console.print("[yellow]Please specify --path, --hash, or --video-id to delete.[/]")
+
+
+@app.command("export")
+def export(
+    format: str = typer.Option("json", "--format", "-f", help="Export format (json/csv)"),
+    output: str = typer.Option(None, "--output", "-o", help="Output file path (default: stdout)"),
+):
+    """
+    アップロード履歴をCSVまたはJSON形式でエクスポートする。
+    """
+    if format not in ("json", "csv"):
+        console.print("[red]--format には 'json' または 'csv' を指定してください。[/]")
+        raise typer.Exit(code=1)
+
+    history_manager = HistoryManager()
+    content = history_manager.export_records(format=format, output_path=output)
+
+    if output:
+        console.print(f"[green]Exported to {output}[/]")
+    else:
+        console.print(content)
+
+
+@app.command("import")
+def import_history(
+    file: Path = typer.Argument(..., help="Import file path (JSON or CSV)"),
+):
+    """
+    CSVまたはJSONファイルからアップロード履歴をインポートする。
+    既に存在するレコード（file_hash が一致）はスキップされる。
+    """
+    if not file.exists():
+        console.print(f"[red]File not found: {file}[/]")
+        raise typer.Exit(code=1)
+
+    # ファイル拡張子から形式を自動判別
+    suffix = file.suffix.lower()
+
+    try:
+        with open(file, "r", encoding="utf-8") as f:
+            raw = f.read()
+
+        if suffix == ".csv":
+            reader = csv.DictReader(raw.splitlines())
+            records = []
+            for row in reader:
+                # CSVから読み込んだ数値型を変換
+                if row.get("timestamp"):
+                    try:
+                        row["timestamp"] = float(row["timestamp"])
+                    except (ValueError, TypeError):
+                        pass
+                if row.get("file_size"):
+                    try:
+                        row["file_size"] = int(row["file_size"])
+                    except (ValueError, TypeError):
+                        row["file_size"] = 0
+                records.append(row)
+        else:
+            # JSON形式として読み込み
+            records = json.loads(raw)
+            if not isinstance(records, list):
+                console.print("[red]JSON file must contain a list of records.[/]")
+                raise typer.Exit(code=1)
+
+    except (json.JSONDecodeError, csv.Error) as e:
+        console.print(f"[red]Failed to parse file: {e}[/]")
+        raise typer.Exit(code=1)
+
+    history_manager = HistoryManager()
+    imported, skipped = history_manager.import_records(records)
+
+    console.print(
+        f"[green]Import complete:[/] {imported} imported, {skipped} skipped (duplicates)"
+    )

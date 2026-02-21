@@ -201,3 +201,94 @@ def test_delete_by_path_and_video(history: HistoryManager):
     assert history.get_upload_count() == 0
     assert history.get_record("h2") is None
 
+
+def test_export_records_json(history: HistoryManager):
+    """JSON形式のエクスポートテスト"""
+    import json
+
+    history.add_record("/tmp/e1.mp4", "exp_h1", "exp_v1", {"title": "Export Test"})
+    history.add_record("/tmp/e2.mp4", "exp_h2", "exp_v2", {})
+
+    content = history.export_records(format="json")
+    data = json.loads(content)
+
+    assert len(data) == 2
+    # タイムスタンプ降順なので newest first
+    hashes = {d["file_hash"] for d in data}
+    assert "exp_h1" in hashes
+    assert "exp_h2" in hashes
+
+
+def test_export_records_csv(history: HistoryManager):
+    """CSV形式のエクスポートテスト"""
+    import csv
+    import io
+
+    history.add_record("/tmp/c1.mp4", "csv_h1", "csv_v1", {})
+
+    content = history.export_records(format="csv")
+    reader = csv.DictReader(io.StringIO(content))
+    rows = list(reader)
+
+    assert len(rows) == 1
+    assert rows[0]["file_hash"] == "csv_h1"
+    assert rows[0]["video_id"] == "csv_v1"
+
+
+def test_export_records_to_file(history: HistoryManager, tmp_path):
+    """ファイルへのエクスポートテスト"""
+    import json
+
+    history.add_record("/tmp/f1.mp4", "file_h1", "file_v1", {})
+
+    output_path = str(tmp_path / "export.json")
+    history.export_records(format="json", output_path=output_path)
+
+    with open(output_path, "r") as f:
+        data = json.loads(f.read())
+    assert len(data) == 1
+    assert data[0]["file_hash"] == "file_h1"
+
+
+def test_import_records(history: HistoryManager):
+    """レコードインポートの正常系テスト"""
+    records = [
+        {"file_path": "/tmp/i1.mp4", "file_hash": "imp_h1", "video_id": "imp_v1", "status": "success"},
+        {"file_path": "/tmp/i2.mp4", "file_hash": "imp_h2", "video_id": "imp_v2", "status": "success"},
+    ]
+
+    imported, skipped = history.import_records(records)
+
+    assert imported == 2
+    assert skipped == 0
+    assert history.get_upload_count() == 2
+    assert history.get_record("imp_h1") is not None
+
+
+def test_import_records_duplicate_skip(history: HistoryManager):
+    """重複レコードのスキップテスト"""
+    # 先にレコードを追加
+    history.add_record("/tmp/dup.mp4", "dup_h1", "dup_v1", {})
+
+    records = [
+        {"file_path": "/tmp/dup.mp4", "file_hash": "dup_h1", "video_id": "dup_v1", "status": "success"},
+        {"file_path": "/tmp/new.mp4", "file_hash": "new_h1", "video_id": "new_v1", "status": "success"},
+    ]
+
+    imported, skipped = history.import_records(records)
+
+    assert imported == 1
+    assert skipped == 1
+    assert history.get_upload_count() == 2
+
+
+def test_import_records_no_hash(history: HistoryManager):
+    """file_hashが欠けているレコードのスキップテスト"""
+    records = [
+        {"file_path": "/tmp/nohash.mp4", "video_id": "v1"},
+    ]
+
+    imported, skipped = history.import_records(records)
+
+    assert imported == 0
+    assert skipped == 1

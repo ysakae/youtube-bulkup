@@ -54,3 +54,47 @@ def test_delete_no_args():
     result = runner.invoke(app, ["delete"])
     assert result.exit_code == 0
     assert "Please specify" in result.stdout
+
+
+def test_export_json(mock_history_manager):
+    """JSON形式のexportコマンドテスト"""
+    mock_history_manager.export_records.return_value = '[{"file_hash": "h1", "video_id": "v1"}]'
+
+    result = runner.invoke(app, ["export", "--format", "json"])
+    assert result.exit_code == 0
+    mock_history_manager.export_records.assert_called_once_with(format="json", output_path=None)
+
+
+def test_export_csv_to_file(mock_history_manager):
+    """CSV形式でファイル出力するexportコマンドテスト"""
+    mock_history_manager.export_records.return_value = "file_path,file_hash\n/tmp/a.mp4,h1"
+
+    result = runner.invoke(app, ["export", "--format", "csv", "--output", "/tmp/test.csv"])
+    assert result.exit_code == 0
+    assert "Exported to" in result.stdout
+    mock_history_manager.export_records.assert_called_once_with(format="csv", output_path="/tmp/test.csv")
+
+
+def test_import_json(mock_history_manager, tmp_path):
+    """JSONファイルをimportするテスト"""
+    import json
+
+    test_file = tmp_path / "import.json"
+    data = [
+        {"file_path": "/tmp/i1.mp4", "file_hash": "h1", "video_id": "v1", "status": "success"},
+    ]
+    test_file.write_text(json.dumps(data))
+
+    mock_history_manager.import_records.return_value = (1, 0)
+
+    result = runner.invoke(app, ["import", str(test_file)])
+    assert result.exit_code == 0
+    assert "Import complete" in result.stdout
+    assert "1 imported" in result.stdout
+
+
+def test_import_file_not_found():
+    """存在しないファイルを指定した場合のテスト"""
+    result = runner.invoke(app, ["import", "/nonexistent/file.json"])
+    assert result.exit_code == 1
+    assert "File not found" in result.stdout

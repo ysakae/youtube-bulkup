@@ -108,3 +108,22 @@ class SyncManager:
             })
 
         return in_sync, missing_in_local, missing_in_remote
+
+    def fix_missing_remote(self, missing_remote_items: list) -> tuple:
+        """
+        ローカルにだけあるレコード（リモートで削除済み）を履歴から削除する。
+        Returns: (deleted_count, failed_count)
+        """
+        deleted = 0
+        failed = 0
+
+        for item in missing_remote_items:
+            video_id = item["video_id"]
+            if self.history.delete_record_by_video_id(video_id):
+                logger.info(f"Deleted local record for {video_id}")
+                deleted += 1
+            else:
+                logger.warning(f"Failed to delete local record for {video_id}")
+                failed += 1
+
+        return deleted, failed

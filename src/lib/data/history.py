@@ -1,3 +1,6 @@
+import csv
+import io
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -201,6 +204,85 @@ class HistoryManager:
         """Get all failed upload records."""
         File = Query()
         return self.table.search(File.status == "failed")
+
+    def export_records(self, format: str = "json", output_path: str = None) -> str:
+        """
+        全レコードをJSON/CSV形式でエクスポートする。
+        output_path が指定された場合はファイルに書き出し、
+        指定されない場合は文字列として返す。
+        """
+        records = self.get_all_records()
+
+        if format == "csv":
+            output = io.StringIO()
+            if records:
+                # CSVのカラム定義
+                fieldnames = [
+                    "file_path", "file_hash", "video_id", "status",
+                    "timestamp", "error", "playlist_name", "file_size",
+                ]
+                writer = csv.DictWriter(output, fieldnames=fieldnames)
+                writer.writeheader()
+                for record in records:
+                    # metadata は複雑な構造なので CSV からは除外
+                    row = {k: record.get(k, "") for k in fieldnames}
+                    writer.writerow(row)
+            content = output.getvalue()
+        else:
+            # JSON形式
+            # TinyDB の内部 doc_id を除外してクリーンなエクスポート
+            clean_records = []
+            for record in records:
+                clean = {k: v for k, v in record.items() if not k.startswith("_")}
+                clean_records.append(clean)
+            content = json.dumps(clean_records, indent=2, ensure_ascii=False)
+
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info(f"Exported {len(records)} records to {output_path}")
+
+        return content
+
+    def import_records(self, records: list) -> tuple:
+        """
+        レコードリストをインポートする。
+        file_hash が既に存在するレコードはスキップする。
+        Returns: (imported_count, skipped_count)
+        """
+        imported = 0
+        skipped = 0
+
+        for record in records:
+            file_hash = record.get("file_hash")
+            if not file_hash:
+                logger.warning(f"Skipping record without file_hash: {record}")
+                skipped += 1
+                continue
+
+            # 既存チェック（hash重複スキップ）
+            existing = self.get_record(file_hash)
+            if existing:
+                logger.debug(f"Skipping existing record: {file_hash}")
+                skipped += 1
+                continue
+
+            # レコードを挿入
+            self.table.insert({
+                "file_path": record.get("file_path", ""),
+                "file_hash": file_hash,
+                "video_id": record.get("video_id"),
+                "metadata": record.get("metadata", {}),
+                "timestamp": record.get("timestamp", time.time()),
+                "status": record.get("status", "success"),
+                "error": record.get("error"),
+                "playlist_name": record.get("playlist_name"),
+                "file_size": record.get("file_size", 0),
+            })
+            imported += 1
+
+        logger.info(f"Imported {imported} records, skipped {skipped}")
+        return imported, skipped
 
     def close(self):
         """Close the database connection."""

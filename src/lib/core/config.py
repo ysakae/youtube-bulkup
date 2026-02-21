@@ -21,6 +21,7 @@ class UploadConfig(BaseModel):
     chunk_size: int = 4194304  # 4MB
     retry_count: int = 5
     privacy_status: str = "private"
+    daily_quota_limit: int = 10000  # YouTube API の1日あたりのクォータ上限
 
 
 

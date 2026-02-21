@@ -277,6 +277,89 @@ class PlaylistManager:
             logger.error(f"Failed to rename playlist {name_or_id}: {e}")
             return False
 
+    def list_playlists(self) -> List[Dict[str, str]]:
+        """
+        全プレイリストの一覧を取得する。
+        各プレイリストのタイトル、ID、動画数、公開設定を返す。
+        """
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+
+            playlists = []
+            next_page_token = None
+
+            while True:
+                request = service.playlists().list(
+                    part="snippet,contentDetails,status",
+                    mine=True,
+                    maxResults=50,
+                    pageToken=next_page_token
+                )
+                response = request.execute()
+
+                for item in response.get("items", []):
+                    playlists.append({
+                        "id": item["id"],
+                        "title": item["snippet"]["title"],
+                        "item_count": item["contentDetails"]["itemCount"],
+                        "privacy": item["status"]["privacyStatus"],
+                    })
+
+                next_page_token = response.get("nextPageToken")
+                if not next_page_token:
+                    break
+
+            logger.info(f"Found {len(playlists)} playlists.")
+            return playlists
+
+        except HttpError as e:
+            logger.error(f"Failed to list playlists: {e}")
+            return []
+
+    def list_playlist_items(self, playlist_name_or_id: str) -> List[Dict[str, str]]:
+        """
+        指定プレイリスト内の全動画の一覧を取得する。
+        各動画のタイトルとVideoIDを返す。
+        """
+        # プレイリスト名からIDを解決（find_playlist_id で新規作成しない）
+        playlist_id = self.find_playlist_id(playlist_name_or_id)
+        if not playlist_id:
+            logger.error(f"Playlist not found: {playlist_name_or_id}")
+            return []
+
+        try:
+            service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
+
+            items = []
+            next_page_token = None
+
+            while True:
+                request = service.playlistItems().list(
+                    part="snippet,contentDetails",
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=next_page_token
+                )
+                response = request.execute()
+
+                for item in response.get("items", []):
+                    items.append({
+                        "video_id": item["contentDetails"]["videoId"],
+                        "title": item["snippet"]["title"],
+                        "position": item["snippet"]["position"],
+                    })
+
+                next_page_token = response.get("nextPageToken")
+                if not next_page_token:
+                    break
+
+            logger.info(f"Found {len(items)} items in playlist {playlist_name_or_id}.")
+            return items
+
+        except HttpError as e:
+            logger.error(f"Failed to list playlist items for {playlist_name_or_id}: {e}")
+            return []
+
     def get_all_playlists_map(self) -> Dict[str, set[str]]:
         """
         Returns a map where key is Playlist ID and value is a Set of Video IDs in that playlist.

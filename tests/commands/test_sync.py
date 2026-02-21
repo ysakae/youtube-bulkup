@@ -121,3 +121,26 @@ def test_sync_missing_remote(mock_dependencies):
                 found_link = True
                 break
         assert found_link, "Link markup not found in Table.add_row calls"
+
+def test_sync_fix(mock_dependencies):
+    """--fix で local-only レコードの削除をテスト"""
+    mock_service = mock_dependencies["service"]
+    mock_service.channels().list().execute.return_value = {
+        "items": [{"contentDetails": {"relatedPlaylists": {"uploads": "PL_UPLOADS"}}}]
+    }
+    # リモートには動画なし
+    mock_service.playlistItems().list().execute.return_value = {
+        "items": []
+    }
+    
+    # ローカルには vid1 がある
+    mock_dependencies["history"].get_all_records.return_value = [
+        {"video_id": "vid1", "status": "success", "file_path": "/path/to/vid1.mp4"}
+    ]
+    mock_dependencies["history"].delete_record_by_video_id.return_value = True
+    
+    with patch("src.commands.sync.Table"):
+        result = runner.invoke(app, ["sync", "--fix", "-y"])
+        assert result.exit_code == 0
+        assert "Fix complete" in result.stdout
+        mock_dependencies["history"].delete_record_by_video_id.assert_called_with("vid1")
