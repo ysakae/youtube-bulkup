@@ -148,9 +148,120 @@ class TestVideoManager(unittest.TestCase):
         mock_videos.delete.return_value = mock_delete
         mock_delete.execute.return_value = {}
 
-        # Execute
         result = self.manager.delete_video("vid123")
 
         # Verify
         self.assertTrue(result)
         mock_videos.delete.assert_called_with(id="vid123")
+
+    @patch("src.lib.video.manager.build")
+    def test_update_metadata_not_found(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.videos().list().execute.return_value = {"items": []}
+
+        result = self.manager.update_metadata("vid123", title="New")
+        self.assertFalse(result)
+
+    @patch("src.lib.video.manager.build")
+    def test_update_metadata_http_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.videos().list().execute.side_effect = HttpError(
+            MagicMock(status=500), b"Error"
+        )
+
+        result = self.manager.update_metadata("vid123", title="New")
+        self.assertFalse(result)
+
+    @patch("src.lib.video.manager.build")
+    @patch("src.lib.video.manager.MediaFileUpload")
+    def test_update_thumbnail_http_error(self, mock_media_file, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.thumbnails().set().execute.side_effect = HttpError(
+            MagicMock(status=500), b"Error"
+        )
+
+        result = self.manager.update_thumbnail("vid123", "dummy_path.jpg")
+        self.assertFalse(result)
+
+    @patch("src.lib.video.manager.build")
+    def test_delete_video_http_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.videos().delete().execute.side_effect = HttpError(
+            MagicMock(status=500), b"Error"
+        )
+
+        result = self.manager.delete_video("vid123")
+        self.assertFalse(result)
+
+    @patch("src.lib.video.manager.build")
+    def test_get_all_uploaded_videos_success(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        # 1. Mock channel list
+        mock_service.channels().list().execute.return_value = {
+            "items": [{
+                "contentDetails": {
+                    "relatedPlaylists": {"uploads": "PL_UPLOADS"}
+                }
+            }]
+        }
+
+        # 2. Mock playlistItems list
+        mock_execute = MagicMock()
+        mock_service.playlistItems().list().execute = mock_execute
+        
+        # Paginated response
+        mock_execute.side_effect = [
+            {
+                "items": [{"contentDetails": {"videoId": "VID1"}, "snippet": {"title": "Title 1"}}],
+                "nextPageToken": "token"
+            },
+            {
+                "items": [{"contentDetails": {"videoId": "VID2"}, "snippet": {"title": "Title 2"}}],
+                "nextPageToken": None
+            }
+        ]
+
+        # 3. Mock videos update for privacy status
+        mock_service.videos().list().execute.return_value = {
+            "items": [
+                {"id": "VID1", "status": {"privacyStatus": "public"}},
+                {"id": "VID2", "status": {"privacyStatus": "private"}}
+            ]
+        }
+
+        # Execute
+        videos = self.manager.get_all_uploaded_videos()
+
+        # Verify
+        self.assertEqual(len(videos), 2)
+        self.assertEqual(videos[0]["id"], "VID1")
+        self.assertEqual(videos[0]["title"], "Title 1")
+        self.assertEqual(videos[0]["privacy"], "public")
+        self.assertEqual(videos[1]["id"], "VID2")
+        self.assertEqual(videos[1]["privacy"], "private")
+
+    @patch("src.lib.video.manager.build")
+    def test_get_all_uploaded_videos_no_channel(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.channels().list().execute.return_value = {"items": []}
+
+        videos = self.manager.get_all_uploaded_videos()
+        self.assertEqual(videos, [])
+
+    @patch("src.lib.video.manager.build")
+    def test_get_all_uploaded_videos_http_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.channels().list().execute.side_effect = HttpError(
+            MagicMock(status=500), b"Error"
+        )
+
+        videos = self.manager.get_all_uploaded_videos()
+        self.assertEqual(videos, [])

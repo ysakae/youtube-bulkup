@@ -156,5 +156,309 @@ class TestPlaylistManager(unittest.TestCase):
         self.assertIn("New Name", self.manager._playlist_cache)
         self.assertNotIn("Old Name", self.manager._playlist_cache)
 
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # Simulate HttpError
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlists().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        # Should not raise exception
+        self.manager._ensure_cache()
+        self.assertFalse(self.manager._initialized)
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_or_create_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_service.playlists().list().execute.return_value = {}
+        
+        resp = httplib2.Response({'status': '400'})
+        mock_service.playlists().insert().execute.side_effect = HttpError(resp, b"Failed to create")
+        
+        playlist_id = self.manager.get_or_create_playlist("New Playlist")
+        self.assertIsNone(playlist_id)
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_to_playlist_already_in(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '400'})
+        mock_service.playlistItems().insert().execute.side_effect = HttpError(resp, b"videoAlreadyInPlaylist")
+        
+        success = self.manager.add_video_to_playlist("PL123", "VID999")
+        self.assertTrue(success)
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_to_playlist_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlistItems().insert().execute.side_effect = HttpError(resp, b"Internal Server Error")
+        
+        success = self.manager.add_video_to_playlist("PL123", "VID999")
+        self.assertFalse(success)
+
+    @patch("src.lib.video.playlist.build")
+    def test_remove_video_from_playlist_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlistItems().list().execute.side_effect = HttpError(resp, b"Internal Server Error")
+        
+        success = self.manager.remove_video_from_playlist("playlist_id_abc", "video_id_xyz")
+        self.assertFalse(success)
+
+    @patch.object(PlaylistManager, "get_or_create_playlist")
+    @patch("src.lib.video.playlist.build")
+    def test_get_video_ids_from_playlist(self, mock_build, mock_get_playlist):
+        mock_get_playlist.return_value = "PL123"
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_list = MagicMock()
+        mock_service.playlistItems().list.return_value = mock_list
+        mock_list.execute.return_value = {
+            "items": [
+                {"contentDetails": {"videoId": "VID1"}},
+                {"contentDetails": {"videoId": "VID2"}}
+            ]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+        
+        video_ids = self.manager.get_video_ids_from_playlist("My Playlist")
+        
+        self.assertEqual(video_ids, ["VID1", "VID2"])
+        
+    @patch.object(PlaylistManager, "get_or_create_playlist")
+    def test_get_video_ids_from_playlist_not_found(self, mock_get_playlist):
+        mock_get_playlist.return_value = None
+        video_ids = self.manager.get_video_ids_from_playlist("Not Found")
+        self.assertEqual(video_ids, [])
+
+    @patch.object(PlaylistManager, "get_or_create_playlist")
+    @patch("src.lib.video.playlist.build")
+    def test_get_video_ids_from_playlist_http_error(self, mock_build, mock_get_playlist):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_get_playlist.return_value = "PL123"
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlistItems().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        video_ids = self.manager.get_video_ids_from_playlist("My Playlist")
+        self.assertEqual(video_ids, [])
+
+    def test_find_playlist_id(self):
+        self.manager._playlist_cache = {
+            "Playlist A": "PL123",
+            "Playlist B": "PL456"
+        }
+        self.manager._initialized = True
+        
+        # Test by title
+        self.assertEqual(self.manager.find_playlist_id("Playlist A"), "PL123")
+        
+        # Test by ID
+        self.assertEqual(self.manager.find_playlist_id("PL456"), "PL456")
+        
+        # Not found
+        self.assertIsNone(self.manager.find_playlist_id("Unknown"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_rename_playlist_not_found(self, mock_build):
+        self.manager._playlist_cache = {}
+        self.manager._initialized = True
+        
+        # Should fail for non-PL string
+        self.assertFalse(self.manager.rename_playlist("Unknown Title", "New Name"))
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # Try raw PL string but no items return from API
+        mock_service.playlists().list().execute.return_value = {"items": []}
+        
+        self.assertFalse(self.manager.rename_playlist("PLUnknown", "New Name"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_rename_playlist_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        self.manager._playlist_cache = {"Title": "PL123"}
+        self.manager._initialized = True
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlists().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        self.assertFalse(self.manager.rename_playlist("Title", "New Name"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_list_playlists(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_service.playlists().list().execute.return_value = {
+            "items": [
+                {
+                    "id": "PL1", 
+                    "snippet": {"title": "Play 1"}, 
+                    "contentDetails": {"itemCount": 5},
+                    "status": {"privacyStatus": "private"}
+                },
+                {
+                    "id": "PL2", 
+                    "snippet": {"title": "Play 2"}, 
+                    "contentDetails": {"itemCount": 2},
+                    "status": {"privacyStatus": "public"}
+                }
+            ],
+            "nextPageToken": None
+        }
+        
+        playlists = self.manager.list_playlists()
+        self.assertEqual(len(playlists), 2)
+        self.assertEqual(playlists[0]["id"], "PL1")
+        self.assertEqual(playlists[0]["item_count"], 5)
+        self.assertEqual(playlists[1]["privacy"], "public")
+
+    @patch("src.lib.video.playlist.build")
+    def test_list_playlists_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlists().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        playlists = self.manager.list_playlists()
+        self.assertEqual(playlists, [])
+
+    @patch.object(PlaylistManager, "find_playlist_id")
+    @patch("src.lib.video.playlist.build")
+    def test_list_playlist_items(self, mock_build, mock_find_id):
+        mock_find_id.return_value = "PL123"
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        mock_service.playlistItems().list().execute.return_value = {
+            "items": [
+                {
+                    "snippet": {"title": "Vid 1", "position": 0},
+                    "contentDetails": {"videoId": "VID1"}
+                }
+            ],
+            "nextPageToken": None
+        }
+        
+        items = self.manager.list_playlist_items("MyList")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["video_id"], "VID1")
+        self.assertEqual(items[0]["title"], "Vid 1")
+        self.assertEqual(items[0]["position"], 0)
+
+    @patch.object(PlaylistManager, "find_playlist_id")
+    def test_list_playlist_items_not_found(self, mock_find_id):
+        mock_find_id.return_value = None
+        items = self.manager.list_playlist_items("Unknown")
+        self.assertEqual(items, [])
+
+    @patch.object(PlaylistManager, "find_playlist_id")
+    @patch("src.lib.video.playlist.build")
+    def test_list_playlist_items_http_error(self, mock_build, mock_find_id):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        mock_find_id.return_value = "PL123"
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlistItems().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        items = self.manager.list_playlist_items("MyList")
+        self.assertEqual(items, [])
+        
+    @patch("src.lib.video.playlist.build")
+    def test_get_all_playlists_map(self, mock_build):
+        self.manager._playlist_cache = {
+            "List1": "PL1",
+            "List2": "PL2"
+        }
+        self.manager._initialized = True
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        # We need mock execute sequences for multiple calls
+        mock_execute = MagicMock()
+        mock_service.playlistItems().list().execute = mock_execute
+        
+        # PL1 returns VID1, VID2. PL2 returns VID3
+        mock_execute.side_effect = [
+            {"items": [{"contentDetails": {"videoId": "VID1"}}, {"contentDetails": {"videoId": "VID2"}}]},
+            {"items": [{"contentDetails": {"videoId": "VID3"}}]}
+        ]
+        
+        mock_service.playlistItems().list_next.return_value = None
+        
+        playlist_map = self.manager.get_all_playlists_map()
+        
+        self.assertIn("PL1", playlist_map)
+        self.assertIn("PL2", playlist_map)
+        self.assertEqual(playlist_map["PL1"], {"VID1", "VID2"})
+        self.assertEqual(playlist_map["PL2"], {"VID3"})
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_all_playlists_map_http_error(self, mock_build):
+        from googleapiclient.errors import HttpError
+        import httplib2
+        
+        self.manager._playlist_cache = {"List1": "PL1"}
+        self.manager._initialized = True
+        
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        
+        resp = httplib2.Response({'status': '500'})
+        mock_service.playlistItems().list().execute.side_effect = HttpError(resp, b"Error")
+        
+        playlist_map = self.manager.get_all_playlists_map()
+        self.assertEqual(playlist_map, {})
+
 if __name__ == '__main__':
     unittest.main()
