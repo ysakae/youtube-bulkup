@@ -36,11 +36,14 @@ class TestScanner:
         f3.touch()
         f4 = tmp_path / ".hidden"
         f4.touch()
+        f5 = tmp_path / "test.m2ts"
+        f5.touch()
 
         assert is_video_file(f1) is True
         assert is_video_file(f2) is True
         assert is_video_file(f3) is False
         assert is_video_file(f4) is False
+        assert is_video_file(f5) is True
 
     def test_scan_directory(self, test_dir):
         """Test recursive scanning."""

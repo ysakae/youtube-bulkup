@@ -6,7 +6,7 @@ import xxhash
 
 logger = logging.getLogger("youtube_up")
 
-VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m2ts"}
 
 
 def is_video_file(path: Path) -> bool:
