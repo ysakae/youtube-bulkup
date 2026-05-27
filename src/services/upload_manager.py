@@ -176,6 +176,13 @@ def handle_upload_error(
             stop_event.set()
             if file_hash != "unknown":
                 history.add_failure(str(file_path), file_hash, "Quota Exceeded", playlist_name=target_playlist, file_size=file_size)
+        elif e.resp.status == 429 and "Video Uploads per day" in str(e):
+            # 429 rateLimitExceeded + 'Video Uploads per day' = 1日のアップロード上限到達
+            progress.console.print("[bold red]CRITICAL: Daily Video Upload Quota Exceeded (429)![/]")
+            progress.console.print("Stopping all further uploads. Quota resets at midnight Pacific Time.")
+            stop_event.set()
+            if file_hash != "unknown":
+                history.add_failure(str(file_path), file_hash, "Daily Upload Quota Exceeded", playlist_name=target_playlist, file_size=file_size)
         elif e.resp.status == 400 and "uploadLimitExceeded" in str(e):
             progress.console.print("[bold red]CRITICAL: Upload Limit Exceeded (Account Limit)![/]")
             progress.console.print("You have reached your daily upload limit for this account.")
@@ -186,7 +193,7 @@ def handle_upload_error(
         else:
             progress.console.print(f"[bold red]API Error processing {file_path.name}: {e}[/]")
         logger.error(f"API Error processing {file_path.name}: {e}")
-        
+
         # クォータエラー等以外での通常の失敗記録
         if not stop_event.is_set() and file_hash != "unknown":
             history.add_failure(str(file_path), file_hash, str(e), playlist_name=target_playlist, file_size=file_size)
