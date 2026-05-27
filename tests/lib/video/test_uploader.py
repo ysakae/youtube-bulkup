@@ -1,4 +1,3 @@
-import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,18 +103,41 @@ async def test_upload_video_unexpected_failure(uploader, mock_service):
 
 
 def test_should_retry_exception():
-    from src.lib.video.uploader import should_retry_exception
     import socket
-    
+
+    from src.lib.video.uploader import should_retry_exception
+
     assert should_retry_exception(socket.error()) is True
     assert should_retry_exception(socket.timeout()) is True
-    
+
     # HttpError
     resp = MagicMock()
     resp.status = 503
     assert should_retry_exception(HttpError(resp, b"")) is True
-    
+
     resp.status = 404
     assert should_retry_exception(HttpError(resp, b"")) is False
-    
+
     assert should_retry_exception(ValueError()) is False
+
+
+def test_should_not_retry_daily_upload_quota_429():
+    """1日のアップロード上限超過 (429 + 'Video Uploads per day') はリトライしない。"""
+    from src.lib.video.uploader import should_retry_exception
+
+    resp = MagicMock()
+    resp.status = 429
+    content = (
+        b"Quota exceeded for quota metric 'Video Uploads' "
+        b"and limit 'Video Uploads per day' of service 'youtube.googleapis.com'"
+    )
+    assert should_retry_exception(HttpError(resp, content)) is False
+
+
+def test_should_retry_transient_429():
+    """通常の429 (一時的なレート制限) はリトライ対象として扱う。"""
+    from src.lib.video.uploader import should_retry_exception
+
+    resp = MagicMock()
+    resp.status = 429
+    assert should_retry_exception(HttpError(resp, b"Too Many Requests")) is True
