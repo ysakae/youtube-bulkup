@@ -462,5 +462,149 @@ class TestPlaylistManager(unittest.TestCase):
         playlist_map = self.manager.get_all_playlists_map()
         self.assertEqual(playlist_map, {})
 
+
+class TestPlaylistPagination(unittest.TestCase):
+    def setUp(self):
+        self.mock_creds = MagicMock()
+        self.manager = PlaylistManager(self.mock_creds)
+
+    @staticmethod
+    def _page(items, next_token=None):
+        page = {"items": items}
+        if next_token:
+            page["nextPageToken"] = next_token
+        return page
+
+    @staticmethod
+    def _item(pid, title, published="2020-01-01T00:00:00Z", count=0):
+        return {
+            "id": pid,
+            "snippet": {"title": title, "publishedAt": published},
+            "contentDetails": {"itemCount": count},
+            "status": {"privacyStatus": "private"},
+        }
+
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_follows_pagination(self, mock_build):
+        """50件を超えるプレイリストを全件取得する (544個ある環境の回帰テスト)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        page1 = self._page([self._item(f"PL{i}", f"T{i}") for i in range(50)], "TOKEN")
+        page2 = self._page([self._item(f"PL{i}", f"T{i}") for i in range(50, 60)])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(len(self.manager._playlists), 60)
+        self.assertEqual(len(self.manager._playlist_cache), 60)
+        self.assertIn("T59", self.manager._playlist_cache)
+
+    @patch("src.lib.video.playlist.build")
+    def test_pagination_passes_page_token(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        page1 = self._page([self._item("PL1", "T1")], "TOKEN")
+        page2 = self._page([self._item("PL2", "T2")])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        calls = mock_service.playlists().list.call_args_list
+        tokens = [c.kwargs.get("pageToken") for c in calls if "pageToken" in c.kwargs]
+        self.assertIn("TOKEN", tokens)
+
+    @patch("src.lib.video.playlist.build")
+    def test_duplicate_titles_resolve_to_oldest(self, mock_build):
+        """同名が複数あるとき、最も古いものを「正」とする。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_MID", "運動会", "2022-01-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(self.manager._playlist_cache["運動会"], "PL_OLD")
+        self.assertEqual(len(self.manager._playlists), 3)
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_duplicate_playlists(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_SOLO", "発表会", "2021-01-01T00:00:00Z"),
+            ])
+        ]
+
+        dups = self.manager.get_duplicate_playlists()
+
+        self.assertEqual(list(dups.keys()), ["運動会"])
+        self.assertEqual([p.id for p in dups["運動会"]], ["PL_OLD", "PL_NEW"])
+        self.assertNotIn("発表会", dups)
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_duplicate_playlists_none(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([self._item("PL1", "A"), self._item("PL2", "B")])
+        ]
+        self.assertEqual(self.manager.get_duplicate_playlists(), {})
+
+    @patch("src.lib.video.playlist.build")
+    def test_all_playlist_ids_includes_duplicates(self, mock_build):
+        """重複プレイリストの中身も走査対象に含める。
+        漏らすと重複側にだけ入っている動画がオーファン誤判定される。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL_NEW", "PL_OLD"])
+
+    def test_all_playlist_ids_falls_back_to_cache(self):
+        """_playlists が空のとき (テストが _playlist_cache に直接代入した場合) は
+        _playlist_cache の値を使う。"""
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_all_playlists_map_covers_all_playlists(self, mock_build):
+        """544個の環境で50個しか走査していなかった問題の回帰テスト。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        pl_items = [self._item(f"PL{i}", f"T{i}") for i in range(50)]
+        pl_items2 = [self._item(f"PL{i}", f"T{i}") for i in range(50, 60)]
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page(pl_items, "TOKEN"),
+            self._page(pl_items2),
+        ]
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        result = self.manager.get_all_playlists_map()
+
+        self.assertEqual(len(result), 60)
+        self.assertIn("PL59", result)
+
+
 if __name__ == '__main__':
     unittest.main()
