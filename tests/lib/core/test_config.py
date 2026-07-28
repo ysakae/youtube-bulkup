@@ -39,3 +39,63 @@ auth:
         """Test loading from a non-existent file falls back to defaults."""
         config = AppConfig.load("nonexistent.yaml")
         assert config.auth.client_secrets_file == "client_secrets.json"
+
+
+class TestQuotaAndCacheConfig:
+    def test_defaults(self):
+        from src.lib.core.config import AppConfig
+
+        cfg = AppConfig()
+        assert cfg.quota.daily_limit == 10000
+        assert cfg.quota.reserve == 1000
+        assert cfg.cache.enabled is True
+        assert cfg.cache.ttl_hours == 24
+        assert cfg.cache.path == "youtube_cache.db"
+
+    def test_load_from_yaml(self, tmp_path):
+        from src.lib.core.config import AppConfig
+
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "quota:\n"
+            "  daily_limit: 500000\n"
+            "  reserve: 20000\n"
+            "cache:\n"
+            "  enabled: false\n"
+            "  ttl_hours: 6\n"
+            "  path: 'custom_cache.db'\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load(str(path))
+        assert cfg.quota.daily_limit == 500000
+        assert cfg.quota.reserve == 20000
+        assert cfg.cache.enabled is False
+        assert cfg.cache.ttl_hours == 6
+        assert cfg.cache.path == "custom_cache.db"
+
+    def test_effective_daily_quota_prefers_quota_section(self, tmp_path):
+        from src.lib.core.config import AppConfig
+
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "quota:\n  daily_limit: 500000\nupload:\n  daily_quota_limit: 30000\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load(str(path))
+        assert cfg.effective_daily_quota() == 500000
+
+    def test_effective_daily_quota_falls_back_to_upload_section(self, tmp_path):
+        """quota セクションが無く upload.daily_quota_limit だけ変更されている
+        既存の設定ファイルとの後方互換。"""
+        from src.lib.core.config import AppConfig
+
+        path = tmp_path / "settings.yaml"
+        path.write_text("upload:\n  daily_quota_limit: 30000\n", encoding="utf-8")
+        cfg = AppConfig.load(str(path))
+        assert cfg.effective_daily_quota() == 30000
+
+    def test_effective_daily_quota_default(self):
+        from src.lib.core.config import AppConfig
+
+        cfg = AppConfig()
+        assert cfg.effective_daily_quota() == 10000
