@@ -861,6 +861,46 @@ class TestPlaylistCacheIntegration(unittest.TestCase):
         manager = PlaylistManager(self.mock_creds)
         self.assertEqual(manager.get_all_playlists_map(), {"PL1": {"v1"}})
 
+    @staticmethod
+    def _quota_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    @patch("src.lib.video.playlist.build")
+    def test_quota_error_during_scan_does_not_mark_complete(self, mock_build):
+        """走査の途中でクォータが尽きたら、キャッシュを「完了」と記録しない。
+
+        部分的にしか取得できていないキャッシュを新鮮とみなすと、
+        次回の判定で大量の動画がオーファンと誤判定される。
+        """
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A"), self._pl_item("PL2", "B")]
+        }
+        # 1件目 (PL1) は成功、2件目 (PL2) で quota 枯渇
+        mock_service.playlistItems().list.return_value.execute.side_effect = [
+            {"items": [{"contentDetails": {"videoId": "v1"}}]},
+            self._quota_error(),
+        ]
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+
+        with self.assertRaises(QuotaExceededError):
+            manager.get_all_playlists_map()
+
+        self.assertFalse(
+            self.cache.is_fresh("playlist_items"),
+            "走査が完走していないのに完了と記録されている",
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
