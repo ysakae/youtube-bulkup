@@ -5,6 +5,9 @@ from typing import Dict, List, Optional
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from ..core.quota import QuotaExceededError, is_quota_error
+from ..data.snapshot import SnapshotCache
+
 logger = logging.getLogger("youtube_up")
 
 
@@ -24,13 +27,14 @@ class PlaylistManager:
     Manages YouTube Playlist interactions.
     """
 
-    def __init__(self, credentials):
+    def __init__(self, credentials, cache: Optional[SnapshotCache] = None):
         self.credentials = credentials
         # タイトル -> 「正の」プレイリストID。同名が複数ある場合は最古のものを指す。
         self._playlist_cache: Dict[str, str] = {}
         # 全プレイリスト (同名の重複も含む)
         self._playlists: List[PlaylistInfo] = []
         self._initialized = False
+        self._cache = cache
 
     def _ensure_cache(self):
         """
@@ -81,6 +85,18 @@ class PlaylistManager:
 
             self._playlists = playlists
             self._playlist_cache = self._build_title_index(playlists)
+            if self._cache is not None:
+                self._cache.save_playlists([
+                    {
+                        "id": p.id,
+                        "title": p.title,
+                        "item_count": p.item_count,
+                        "privacy": p.privacy,
+                        "published_at": p.published_at,
+                    }
+                    for p in playlists
+                ])
+                self._cache.mark_complete("playlists")
             self._initialized = True
             logger.debug(
                 f"Initialized playlist cache with {len(playlists)} playlists "
@@ -88,6 +104,9 @@ class PlaylistManager:
             )
 
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while listing playlists: {e}")
+                raise QuotaExceededError(str(e)) from e
             logger.error(f"Failed to list playlists: {e}")
             # 初期化済みにしない (次回リトライできるようにする)
 
@@ -190,6 +209,9 @@ class PlaylistManager:
             return playlist_id
 
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while creating playlist '{title}': {e}")
+                raise QuotaExceededError(str(e)) from e
             logger.error(f"Failed to create playlist '{title}': {e}")
             return None
 
@@ -219,6 +241,10 @@ class PlaylistManager:
             return True
 
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while adding {video_id}: {e}")
+                raise QuotaExceededError(str(e)) from e
+
             if "videoAlreadyInPlaylist" in str(e): # Check specific error message if possible
                 logger.info(f"Video {video_id} already in playlist {playlist_id}")
                 return True
@@ -259,6 +285,9 @@ class PlaylistManager:
             return True
 
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while removing {video_id}: {e}")
+                raise QuotaExceededError(str(e)) from e
             logger.error(f"Failed to remove video {video_id} from playlist {playlist_id}: {e}")
             return False
 
@@ -464,13 +493,39 @@ class PlaylistManager:
             logger.error(f"Failed to list playlist items for {playlist_name_or_id}: {e}")
             return []
 
-    def get_all_playlists_map(self) -> Dict[str, set]:
+    def get_all_playlists_map(
+        self, refresh: bool = False, offline: bool = False
+    ) -> Dict[str, set]:
         """
         Returns a map where key is Playlist ID and value is a Set of Video IDs in that playlist.
 
         重複プレイリストの中身も含める。漏らすと重複側にだけ入っている動画が
         オーファンと誤判定される。
+
+        refresh=True: キャッシュを無視して API から取り直す
+        offline=True: API を一切叩かず、期限切れでもキャッシュを使う
+                      (キャッシュが空なら RuntimeError)
         """
+        if offline:
+            if self._cache is None:
+                raise RuntimeError(
+                    "offline モードにはキャッシュが必要です。"
+                    "settings.yaml で cache.enabled を有効にしてください。"
+                )
+            cached = self._cache.load_playlist_map()
+            if not cached:
+                raise RuntimeError(
+                    "キャッシュが空のため offline モードで実行できません。"
+                    "クォータに余裕があるときに --refresh 付きで実行してください。"
+                )
+            return cached
+
+        if self._cache is not None and not refresh and self._cache.is_fresh("playlist_items"):
+            cached = self._cache.load_playlist_map()
+            if cached:
+                logger.info(f"Loaded {len(cached)} playlists from cache.")
+                return cached
+
         self._ensure_cache()
         playlist_map = {}
 
@@ -496,9 +551,18 @@ class PlaylistManager:
                     request = service.playlistItems().list_next(request, response)
 
                 playlist_map[playlist_id] = video_ids
+                if self._cache is not None:
+                    self._cache.save_playlist_items(playlist_id, video_ids)
+
+            if self._cache is not None:
+                # 全件を走査し終えたときだけ「完了」を記録する
+                self._cache.mark_complete("playlist_items")
 
             return playlist_map
 
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while building playlist map: {e}")
+                raise QuotaExceededError(str(e)) from e
             logger.error(f"Failed to build playlist map: {e}")
             return {}

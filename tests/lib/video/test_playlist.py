@@ -643,5 +643,224 @@ class TestPlaylistPagination(unittest.TestCase):
         self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
 
 
+class TestPlaylistQuotaHandling(unittest.TestCase):
+    def setUp(self):
+        self.mock_creds = MagicMock()
+        self.manager = PlaylistManager(self.mock_creds)
+        self.manager._playlist_cache = {"Existing": "PL1"}
+        self.manager._initialized = True
+
+    @staticmethod
+    def _quota_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    @staticmethod
+    def _other_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 404})
+        resp.status = 404
+        return HttpError(resp, b"Not Found")
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().insert.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.add_video_to_playlist("PL1", "v1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_returns_false_on_other_error(self, mock_build):
+        """quota 以外のエラーは従来どおり False を返す (1件の失敗として扱う)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().insert.return_value.execute.side_effect = (
+            self._other_error()
+        )
+
+        self.assertFalse(self.manager.add_video_to_playlist("PL1", "v1"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_or_create_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().insert.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.get_or_create_playlist("Brand New")
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_or_create_returns_none_on_other_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().insert.return_value.execute.side_effect = (
+            self._other_error()
+        )
+
+        self.assertIsNone(self.manager.get_or_create_playlist("Brand New"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_remove_video_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"id": "ITEM1"}]
+        }
+        mock_service.playlistItems().delete.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.remove_video_from_playlist("PL1", "v1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        manager = PlaylistManager(self.mock_creds)
+        mock_service.playlists().list.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            manager._ensure_cache()
+
+
+class TestPlaylistCacheIntegration(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        from src.lib.data.snapshot import SnapshotCache
+
+        self.mock_creds = MagicMock()
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.cache = SnapshotCache(db_path=self.tmp.name, ttl_hours=24)
+
+    def tearDown(self):
+        import os
+
+        self.cache.close()
+        for suffix in ["", "-wal", "-shm"]:
+            path = self.tmp.name + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+    @staticmethod
+    def _pl_item(pid, title):
+        return {
+            "id": pid,
+            "snippet": {"title": title, "publishedAt": "2020-01-01T00:00:00Z"},
+            "contentDetails": {"itemCount": 1},
+            "status": {"privacyStatus": "private"},
+        }
+
+    @patch("src.lib.video.playlist.build")
+    def test_map_is_saved_to_cache(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map()
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+        self.assertEqual(self.cache.load_playlist_map(), {"PL1": {"v1"}})
+        self.assertTrue(self.cache.is_fresh("playlist_items"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_second_call_uses_cache_without_api(self, mock_build):
+        self.cache.save_playlist_items("PLX", {"vA", "vB"})
+        self.cache.mark_complete("playlist_items")
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map()
+
+        self.assertEqual(result, {"PLX": {"vA", "vB"}})
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_refresh_bypasses_cache(self, mock_build):
+        self.cache.save_playlist_items("PLX", {"vA"})
+        self.cache.mark_complete("playlist_items")
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(refresh=True)
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+
+    @patch("src.lib.video.playlist.build")
+    def test_offline_uses_stale_cache_without_api(self, mock_build):
+        """TTL 切れでも offline ならキャッシュを使う (quota 枯渇中の調査用)。"""
+        self.cache.save_playlist_items("PLX", {"vA"})
+        self.cache.mark_complete("playlist_items")
+        self.cache.ttl_seconds = 0
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(offline=True)
+
+        self.assertEqual(result, {"PLX": {"vA"}})
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_offline_without_cache_raises(self, mock_build):
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with self.assertRaises(RuntimeError):
+            manager.get_all_playlists_map(offline=True)
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_no_cache_still_works(self, mock_build):
+        """cache=None でも従来どおり動作する (後方互換)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds)
+        self.assertEqual(manager.get_all_playlists_map(), {"PL1": {"v1"}})
+
+
 if __name__ == '__main__':
     unittest.main()
