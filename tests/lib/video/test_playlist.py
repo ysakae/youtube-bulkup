@@ -605,6 +605,43 @@ class TestPlaylistPagination(unittest.TestCase):
         self.assertEqual(len(result), 60)
         self.assertIn("PL59", result)
 
+    @patch("src.lib.video.playlist.build")
+    def test_newly_created_playlist_is_included_in_scan(self, mock_build):
+        """新規作成したプレイリストが走査対象に入る。
+
+        漏らすと、作成直後に走査したときにそのプレイリストの中身が
+        見えず、中の動画がオーファンと誤判定される。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([self._item("PL_EXISTING", "既存")])
+        ]
+        mock_service.playlists().insert.return_value.execute.return_value = {
+            "id": "PL_NEW",
+            "snippet": {"title": "新規", "publishedAt": "2026-07-28T00:00:00Z"},
+        }
+
+        self.manager._ensure_cache()
+        created = self.manager.get_or_create_playlist("新規")
+
+        self.assertEqual(created, "PL_NEW")
+        self.assertIn("PL_NEW", self.manager._all_playlist_ids())
+        self.assertIn("PL_EXISTING", self.manager._all_playlist_ids())
+
+    def test_all_playlist_ids_merges_both_sources(self):
+        """_playlists と _playlist_cache の両方から漏れなく集める。"""
+        from src.lib.video.playlist import PlaylistInfo
+
+        self.manager._playlists = [
+            PlaylistInfo(id="PL1", title="A", item_count=0, privacy="private",
+                         published_at="2020-01-01T00:00:00Z")
+        ]
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
+
 
 if __name__ == '__main__':
     unittest.main()

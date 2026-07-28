@@ -108,12 +108,19 @@ class PlaylistManager:
     def _all_playlist_ids(self) -> List[str]:
         """走査対象の全プレイリストID。重複プレイリストも含む。
 
-        _playlists が空のとき (テストが _playlist_cache に直接代入した場合など) は
-        _playlist_cache の値にフォールバックする。
+        _playlists と _playlist_cache の両方から集めて重複を除く。
+        _playlists が空のとき (テストが _playlist_cache に直接代入した場合など) も、
+        新規作成直後で片方にしか反映されていない場合も、取りこぼさないため。
         """
-        if self._playlists:
-            return [p.id for p in self._playlists]
-        return list(self._playlist_cache.values())
+        ids = []
+        seen = set()
+        for playlist_id in [p.id for p in self._playlists] + list(
+            self._playlist_cache.values()
+        ):
+            if playlist_id not in seen:
+                seen.add(playlist_id)
+                ids.append(playlist_id)
+        return ids
 
     def get_duplicate_playlists(self) -> Dict[str, List[PlaylistInfo]]:
         """同名プレイリストが2つ以上あるものを {title: [PlaylistInfo, ...]} で返す。
@@ -166,6 +173,19 @@ class PlaylistManager:
 
             playlist_id = response["id"]
             self._playlist_cache[title] = playlist_id
+            # _playlists にも反映する (再走査時に新規作成分が漏れないようにするため)。
+            # _build_title_index は再実行しない: _playlists が空の状態
+            # (テストが _playlist_cache に直接代入したケースなど) で再構築すると
+            # 既存の _playlist_cache のエントリが消えてしまうため。
+            self._playlists.append(
+                PlaylistInfo(
+                    id=playlist_id,
+                    title=title,
+                    item_count=0,
+                    privacy=privacy_status,
+                    published_at=response.get("snippet", {}).get("publishedAt", ""),
+                )
+            )
             logger.info(f"Created playlist '{title}' -> {playlist_id}")
             return playlist_id
 
