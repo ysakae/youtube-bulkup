@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
+
 from src.lib.video.playlist import PlaylistManager
+
 
 class TestPlaylistManager(unittest.TestCase):
     def setUp(self):
@@ -158,8 +160,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_ensure_cache_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -174,8 +176,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_get_or_create_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -190,8 +192,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_add_video_to_playlist_already_in(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -204,8 +206,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_add_video_to_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -218,8 +220,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_remove_video_from_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -261,8 +263,8 @@ class TestPlaylistManager(unittest.TestCase):
     @patch.object(PlaylistManager, "get_or_create_playlist")
     @patch("src.lib.video.playlist.build")
     def test_get_video_ids_from_playlist_http_error(self, mock_build, mock_get_playlist):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_get_playlist.return_value = "PL123"
         
@@ -309,8 +311,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_rename_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         self.manager._playlist_cache = {"Title": "PL123"}
         self.manager._initialized = True
@@ -354,8 +356,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_list_playlists_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -399,8 +401,8 @@ class TestPlaylistManager(unittest.TestCase):
     @patch.object(PlaylistManager, "find_playlist_id")
     @patch("src.lib.video.playlist.build")
     def test_list_playlist_items_http_error(self, mock_build, mock_find_id):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_find_id.return_value = "PL123"
         
@@ -445,8 +447,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_get_all_playlists_map_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         self.manager._playlist_cache = {"List1": "PL1"}
         self.manager._initialized = True

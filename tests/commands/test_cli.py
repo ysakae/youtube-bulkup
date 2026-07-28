@@ -31,8 +31,8 @@ def mock_dependencies():
          patch("src.commands.reupload.FileMetadataGenerator") as m_meta_reupload, \
          patch("src.commands.retry.FileMetadataGenerator") as m_meta_retry, \
          \
-         patch("src.services.upload_manager.calculate_hash", return_value="dummy_hash") as m_hash_manager, \
-         patch("src.commands.reupload.calculate_hash", return_value="dummy_hash") as m_hash_reupload, \
+         patch("src.services.upload_manager.calculate_hash", return_value="dummy_hash"), \
+         patch("src.commands.reupload.calculate_hash", return_value="dummy_hash"), \
          patch("src.services.upload_manager.scan_directory") as mock_scan:
 
         # Setup shared mock objects
@@ -99,7 +99,7 @@ def test_upload_command_dry_run(mock_dependencies):
     mock_dependencies["scan"].return_value = [path1]
     
     # process_video_files is now in src.services.upload_manager
-    with patch("src.commands.upload.orchestrate_upload") as mock_orch:
+    with patch("src.commands.upload.orchestrate_upload"):
         # Note: upload command calls orchestrate_upload directly now
         result = runner.invoke(app, ["upload", "/tmp/videos", "--dry-run"])
         assert result.exit_code == 0

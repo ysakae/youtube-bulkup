@@ -1,7 +1,10 @@
 import unittest
 from unittest.mock import MagicMock, patch
-from src.lib.video.manager import VideoManager
+
 from googleapiclient.errors import HttpError
+
+from src.lib.video.manager import VideoManager
+
 
 class TestVideoManager(unittest.TestCase):
     def setUp(self):

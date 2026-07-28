@@ -1,10 +1,10 @@
 
+from unittest.mock import patch
+
 import pytest
 from typer.testing import CliRunner
-from unittest.mock import MagicMock, patch
-from pathlib import Path
+
 from src.main import app
-from src.lib.data.history import HistoryManager
 
 runner = CliRunner()
 
