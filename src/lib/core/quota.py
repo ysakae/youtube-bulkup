@@ -1,0 +1,98 @@
+"""YouTube Data API のクォータ管理。
+
+クォータ枯渇の判定と、ローカルでの消費ユニット見積もりを提供する。
+コストの根拠: https://developers.google.com/youtube/v3/determine_quota_cost
+"""
+
+import logging
+from typing import Dict
+
+from googleapiclient.errors import HttpError
+
+logger = logging.getLogger("youtube_up")
+
+# 操作あたりの消費ユニット
+COSTS: Dict[str, int] = {
+    "list": 1,
+    "insert": 50,
+    "update": 50,
+    "delete": 50,
+    "upload": 1600,  # videos.insert
+}
+
+
+class QuotaExceededError(Exception):
+    """クォータを使い切ったことを示す。処理の即時中断を要求する。"""
+
+
+def is_quota_error(exception: BaseException) -> bool:
+    """クォータ枯渇 (リセットまで回復しない) かどうかを判定する。
+
+    YouTube は以下を1日の上限として返す:
+      - HTTP 403 + 'quotaExceeded'
+      - HTTP 429 + 'Video Uploads per day' (rateLimitExceeded)
+      - HTTP 400 + 'uploadLimitExceeded'
+
+    これらはリトライしても回復しないため、即座に中断すべき。
+    一時的な 429 (単なるレート超過) はここでは False を返す。
+    """
+    if not isinstance(exception, HttpError):
+        return False
+
+    status = exception.resp.status
+    # コンテンツがバイト列の場合はデコード
+    content = exception.content
+    if isinstance(content, bytes):
+        content = content.decode("utf-8")
+
+    if status == 403 and "quotaExceeded" in content:
+        return True
+    if status == 429 and "Video Uploads per day" in content:
+        return True
+    if status == 400 and "uploadLimitExceeded" in content:
+        return True
+    return False
+
+
+class QuotaLedger:
+    """消費ユニットを積算する見積もり用の帳簿。
+
+    実際の残量は API 側にしか無いため、これは 403 を受け取る前に
+    自主的に止まるための安全弁である。実際の枯渇検知 (is_quota_error)
+    と併用すること。
+    """
+
+    def __init__(self, budget: int) -> None:
+        self._budget = max(0, budget)
+        self._spent = 0
+
+    @property
+    def budget(self) -> int:
+        return self._budget
+
+    @property
+    def spent(self) -> int:
+        return self._spent
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self._budget - self._spent)
+
+    def cost_of(self, op: str, count: int = 1) -> int:
+        """操作 op を count 回行ったときの消費ユニットを返す。"""
+        if op not in COSTS:
+            raise ValueError(f"Unknown quota operation: {op}")
+        return COSTS[op] * count
+
+    def can_afford(self, op: str, count: int = 1) -> bool:
+        """予算内に収まるかを判定する。"""
+        return self._spent + self.cost_of(op, count) <= self._budget
+
+    def charge(self, op: str, count: int = 1) -> None:
+        """消費を計上する。予算を超える場合は計上せず例外を送出する。"""
+        cost = self.cost_of(op, count)
+        if self._spent + cost > self._budget:
+            raise QuotaExceededError(
+                f"予算超過: {self._spent:,} + {cost:,} > {self._budget:,} ユニット"
+            )
+        self._spent += cost
