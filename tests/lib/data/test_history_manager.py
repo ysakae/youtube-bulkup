@@ -378,3 +378,28 @@ class TestPlaylistSynced:
         h2 = HistoryManager(db_path=temp_db_path)
         assert h2.get_record_by_video_id("oldvid")["playlist_synced"] is None
         h2.close()
+
+    def test_add_record_resets_playlist_synced(self, history):
+        """upsert で video_id が変わったら同期状態は不明(NULL)に戻す。
+
+        別の動画に置き換わった以上、古い同期状態は無関係な情報になるため。
+        """
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", True)
+
+        # 同じ file_hash で別の video_id に上書き (--force 再アップロード相当)
+        history.add_record("/a.mp4", "h1", "vid2", {}, playlist_name="PL")
+
+        assert history.get_record_by_video_id("vid2")["playlist_synced"] is None
+
+    def test_add_failure_resets_playlist_synced(self, history):
+        """失敗記録への上書きでも同期状態は不明(NULL)に戻す。"""
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", True)
+
+        history.add_failure("/a.mp4", "h1", "エラー", playlist_name="PL")
+
+        rows = list(history.conn.execute(
+            "SELECT playlist_synced FROM uploads WHERE file_hash = 'h1'"
+        ))
+        assert rows[0][0] is None

@@ -207,7 +207,7 @@ class HistoryManager:
             self.conn.execute(
                 """UPDATE uploads SET
                    file_path=?, video_id=?, metadata=?, timestamp=?,
-                   status='success', error=NULL, playlist_name=?, file_size=?
+                   status='success', error=NULL, playlist_name=?, file_size=?, playlist_synced=NULL
                    WHERE file_hash=?""",
                 (str(file_path), video_id, metadata_json, now, playlist_name, file_size, file_hash),
             )
@@ -241,7 +241,7 @@ class HistoryManager:
             self.conn.execute(
                 """UPDATE uploads SET
                    file_path=?, video_id=NULL, metadata=?, timestamp=?,
-                   status='failed', error=?, playlist_name=?, file_size=?
+                   status='failed', error=?, playlist_name=?, file_size=?, playlist_synced=NULL
                    WHERE file_hash=?""",
                 (str(file_path), metadata_json, now, str(error_msg), playlist_name, file_size, file_hash),
             )
