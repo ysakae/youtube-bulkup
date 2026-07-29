@@ -408,9 +408,18 @@ class HistoryManager:
         """プレイリストへの追加の成否を記録する。
 
         1=成功 / 0=失敗。該当レコードが無い場合は何もしない。
+
+        video_id に UNIQUE 制約は無く、インポート等で同一 video_id の行が
+        複数できうる。防御的に、最新の1行だけを更新する
+        (WHERE video_id = ? だけでは全件を巻き込んでしまう)。
+        SQLite の UPDATE ... LIMIT はビルドオプション依存のため、
+        rowid を絞り込む副問い合わせで代用する。
         """
         self.conn.execute(
-            "UPDATE uploads SET playlist_synced = ? WHERE video_id = ?",
+            "UPDATE uploads SET playlist_synced = ? WHERE rowid = ("
+            "  SELECT rowid FROM uploads WHERE video_id = ? "
+            "  ORDER BY timestamp DESC, rowid DESC LIMIT 1"
+            ")",
             (1 if synced else 0, video_id),
         )
         self.conn.commit()

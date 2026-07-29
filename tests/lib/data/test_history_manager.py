@@ -335,6 +335,32 @@ class TestPlaylistSynced:
         history.set_playlist_synced("nope", True)
         assert history.get_record_by_video_id("nope") is None
 
+    def test_set_playlist_synced_updates_only_one_row(self, history):
+        """同一 video_id の行が複数あっても1行だけ更新する (防御的措置)。
+
+        video_id に UNIQUE 制約は無いため、インポート等で重複しうる。
+        WHERE video_id = ? だけでは全件を巻き込んで更新してしまう。
+        """
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/a.mp4', 'h1', 'dup', 100)"
+        )
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/b.mp4', 'h2', 'dup', 200)"
+        )
+        history.conn.commit()
+
+        history.set_playlist_synced("dup", True)
+
+        rows = history.conn.execute(
+            "SELECT timestamp, playlist_synced FROM uploads WHERE video_id = 'dup' "
+            "ORDER BY timestamp"
+        ).fetchall()
+        synced = [r["playlist_synced"] for r in rows]
+        assert synced.count(1) == 1, "複数行がまとめて更新されている"
+        assert rows[-1]["playlist_synced"] == 1, "最新の行が更新されるべき"
+
     def test_get_unsynced_records_returns_only_zero(self, history):
         history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
         history.add_record("/b.mp4", "h2", "vid2", {}, playlist_name="PL")

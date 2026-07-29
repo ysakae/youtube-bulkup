@@ -47,6 +47,27 @@ class TestIsQuotaError:
     def test_non_http_error_is_not_quota_error(self):
         assert is_quota_error(ValueError("boom")) is False
 
+    def test_non_utf8_content_does_not_raise(self):
+        """非 UTF-8 の応答本文でも例外を漏らさない。
+
+        is_quota_error は tenacity の should_retry_exception から
+        アップロードのホットパスで呼ばれるため、判定関数が例外を投げると
+        リトライ機構ごと壊れる。
+        """
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        err = HttpError(resp, b"\xff\xfe invalid utf-8 \x80")
+
+        assert is_quota_error(err) is False
+
+    def test_non_utf8_content_still_detects_quota_exceeded(self):
+        """壊れたバイトが混ざっていても、判別キーワードは拾える。"""
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        err = HttpError(resp, b"\xff\xfe quotaExceeded \x80")
+
+        assert is_quota_error(err) is True
+
 
 class TestQuotaLedger:
     def test_initial_state(self):

@@ -40,10 +40,13 @@ def is_quota_error(exception: BaseException) -> bool:
         return False
 
     status = exception.resp.status
-    # コンテンツがバイト列の場合はデコード
+    # コンテンツがバイト列の場合はデコード。
+    # errors="replace" は必須: この関数は tenacity の
+    # should_retry_exception からアップロードのホットパスで呼ばれるため、
+    # 非 UTF-8 の応答で UnicodeDecodeError を漏らすとリトライ機構ごと壊れる。
     content = exception.content
     if isinstance(content, bytes):
-        content = content.decode("utf-8")
+        content = content.decode("utf-8", errors="replace")
 
     if status == 403 and "quotaExceeded" in content:
         return True
