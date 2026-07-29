@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 from googleapiclient.errors import HttpError
 
+from src.lib.core.quota import QuotaExceededError
 from src.services.upload_manager import handle_upload_error
 
 
@@ -97,6 +98,36 @@ def test_handle_upload_error_generic_500_does_not_stop_pipeline():
 
     assert not stop_event.is_set()
     history.add_failure.assert_called_once()
+
+
+def test_handle_upload_error_quota_exceeded_error_stops_pipeline_without_failure_record():
+    """QuotaExceededError は isinstance(e, HttpError) より前の専用分岐で
+    処理され、stop_event をセットする。HttpError ではないため
+    `isinstance(e, HttpError)` の順序が崩れると else 節に落ちて
+    stop_event が立たなくなる回帰を検知するためのテスト。
+
+    アップロード自体は成功しており失敗記録の対象ではないため、
+    history.add_failure は呼ばれない
+    (playlist_synced への記録は post_upload_sync 側の責務)。"""
+    file_path = MagicMock()
+    file_path.name = "v1.mp4"
+    progress = MagicMock()
+    history = MagicMock()
+    stop_event = asyncio.Event()
+
+    handle_upload_error(
+        QuotaExceededError("out"),
+        file_path=file_path,
+        file_hash="hash1",
+        file_size=1000,
+        target_playlist="pl",
+        stop_event=stop_event,
+        progress=progress,
+        history=history,
+    )
+
+    assert stop_event.is_set(), "quota 枯渇時は stop_event がセットされるべき"
+    history.add_failure.assert_not_called()
 
 
 class TestPostUploadPlaylistSync:

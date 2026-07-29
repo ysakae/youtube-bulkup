@@ -187,8 +187,11 @@ def handle_upload_error(
     Handle upload exceptions, log failures, and potentially trigger a stop event.
     """
     if isinstance(e, QuotaExceededError):
-        progress.console.print("[bold red]CRITICAL: YouTube API Quota Exceeded![/]")
-        progress.console.print("Stopping all further uploads. Please try again tomorrow.")
+        progress.console.print("[bold red]重大: YouTube API のクォータを使い切りました![/]")
+        progress.console.print(
+            "これ以上のアップロードを停止します。"
+            "太平洋時間の深夜（日本時間の16〜17時頃）にリセットされます。"
+        )
         stop_event.set()
         return
 
