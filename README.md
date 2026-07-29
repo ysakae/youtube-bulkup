@@ -77,8 +77,9 @@ upload:
 
 # クォータ設定
 quota:
-  daily_limit: 10000   # YouTube Data API 日次クォータ上限 (ユニット)
-  reserve: 1000        # 予備として残すユニット
+  daily_limit: 10000        # Queries per day の上限 (ユニット)
+  reserve: 1000             # 予備として残すユニット
+  daily_video_uploads: 100  # Video Uploads per day の上限 (本/日)
 
 # YouTube 側の状態のローカルキャッシュ
 cache:
@@ -107,13 +108,21 @@ metadata:
 
 #### `quota.daily_limit`
 
-YouTube Data API の日次クォータ上限（ユニット）です。
+GCP コンソールの **「Queries per day」**（日次のクエリ数、ユニット）の上限です。
 
-> **重要:** GCP でクォータの引き上げ申請をしている場合は、**必ず実際の上限値に設定してください。** 既定の `10000` のままだと、大量アップロード後に `playlist orphans --fix` / `playlist dedupe --fix` が動作しなくなります。
->
-> 動画のアップロードは1本あたり 1,600 ユニットを消費するため、既定値のままだと **7本アップロードした時点でその日の残量が 0 と見積もられ**、`--fix` 系コマンドが「本日の推定残量では1件も処理できません」と表示して何もしなくなります。毎日アップロードしている場合、これは恒久的に壊れているように見えます。
+プレイリストへの追加（50 units）、プレイリストの作成・削除（50 units）、一覧の取得（1 unit）などがここから引かれます。**動画のアップロード自体はこの枠を消費しません**（下の [`quota.daily_video_uploads`](#quotadaily_video_uploads) を参照）。
+
+> **重要:** GCP でクォータの引き上げ申請をしている場合は、**必ず実際の上限値に設定してください。** 既定の `10000` のままだと、`playlist orphans --fix` / `playlist dedupe --fix` の1日あたりの処理件数が実際より少なく見積もられます。
 
 クォータの設定箇所は `quota.daily_limit` と `upload.daily_quota_limit` の2つがありますが、**大きい方が採用されます。** どちらを引き上げても効くため、「上げたのに反映されない」ということはありません。新しく設定するなら `quota.daily_limit` を使ってください。
+
+#### `quota.daily_video_uploads`
+
+GCP コンソールの **「Video Uploads per day」**（1日にアップロードできる動画の本数）の上限です（既定: `100`）。
+
+動画のアップロード（`videos.insert`）は `Queries per day` ではなく、**この本数ベースの独立した枠**でカウントされます。上限に達すると YouTube は `429 rateLimitExceeded (Video Uploads per day)` を返し、本ツールはそれを検知してアップロードを停止します。
+
+GCP コンソールで実際の値が異なる場合はこの設定を合わせてください。`yt-up upload` の開始時に表示される「本日のアップロード可能残数」の見積もりに使われます。
 
 #### `quota.reserve`
 
@@ -310,20 +319,28 @@ yt-up quota
 
 ## Quota (API割り当て) について
 
-YouTube Data API には1日あたりの使用制限（Quota）があります。デフォルトは **10,000 ユニット/日** です。
-動画1本のアップロードに約 1,600 ユニット消費するため、デフォルトでは1日6本程度しかアップロードできません。
+YouTube Data API の割り当てには、**独立した2つの枠**があります（GCP コンソールの割り当てページで実測値を確認できます）。
 
-大量の動画をアップロードする場合は、この上限を引き上げる申請が必要です。
+| 枠 | 既定値 | 何が消費するか | 対応する設定 |
+|---|---|---|---|
+| **Queries per day** | 10,000 units/日 | プレイリスト操作、一覧取得など | `quota.daily_limit` |
+| **Video Uploads per day** | 100 本/日 | 動画のアップロード (`videos.insert`) | `quota.daily_video_uploads` |
+
+> **重要:** 動画のアップロードは **`Queries per day` を消費しません。** 公式ドキュメントには `videos.insert` = 1,600 units と記載されていますが、実際の GCP プロジェクトでは本数ベースの `Video Uploads per day` でカウントされます（1,600 units 換算なら7本で 10,000 units を超えるはずのところ、実際には1日 100 本前後のアップロードが成功しています）。そのため本ツールは、`Queries per day` の予算計算にアップロード本数 × 1,600 units を用いません。
+
+大量の動画をアップロードする場合は、上限の引き上げ申請が必要です（`Queries per day` と `Video Uploads per day` はそれぞれ別に申請します）。
 詳しい手順については [docs/QUOTA_INCREASE.md](docs/QUOTA_INCREASE.md) を参照してください。
 
-各操作の消費ユニット:
+`Queries per day` を消費する各操作のユニット:
 
 | 操作 | units |
 |---|---|
-| 動画のアップロード (`videos.insert`) | 1,600 |
 | プレイリストへの追加 (`playlistItems.insert`) | 50 |
 | プレイリストの作成・削除 | 50 |
 | 一覧の取得 (`*.list`、1ページ50件) | 1 |
+| 動画のアップロード (`videos.insert`) | 0（`Video Uploads per day` で本数としてカウント） |
+
+なお、アップロード時には動画をプレイリストへ追加するため、アップロード1本につき `playlistItems.insert` の 50 units が `Queries per day` から引かれます（100本アップロードすると 5,000 units）。`--fix` 系コマンドの予算はこの分を差し引いて見積もられます。
 
 `playlist orphans --fix` は1本あたり 50 units、`playlist dedupe --fix` は
 動画1本の移動あたり 100 units（`playlistItems.insert` + `playlistItems.delete`）
