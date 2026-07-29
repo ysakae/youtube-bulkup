@@ -143,3 +143,23 @@ class TestQuotaAndCacheConfig:
         assert DEFAULT_DAILY_QUOTA_LIMIT == 10000
         assert cfg.upload.daily_quota_limit == DEFAULT_DAILY_QUOTA_LIMIT
         assert cfg.quota.daily_limit == DEFAULT_DAILY_QUOTA_LIMIT
+
+    def test_daily_video_uploads_default(self):
+        """GCP の「Video Uploads per day」に対応する設定 (既定 100 本/日)。"""
+        from src.lib.core.config import DEFAULT_DAILY_VIDEO_UPLOADS, AppConfig
+
+        cfg = AppConfig()
+        assert DEFAULT_DAILY_VIDEO_UPLOADS == 100
+        assert cfg.quota.daily_video_uploads == DEFAULT_DAILY_VIDEO_UPLOADS
+
+    def test_daily_video_uploads_from_yaml(self, tmp_path):
+        """GCP で本数の上限が変わったら設定で調整できる。"""
+        from src.lib.core.config import AppConfig
+
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "quota:\n  daily_limit: 10000\n  daily_video_uploads: 250\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load(str(path))
+        assert cfg.quota.daily_video_uploads == 250

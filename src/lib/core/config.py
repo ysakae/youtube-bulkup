@@ -9,10 +9,17 @@ load_dotenv()
 from pydantic import BaseModel, Field  # noqa: E402
 
 # YouTube Data API の既定の日次クォータ上限 (ユニット)。
+# GCP コンソールの「Queries per day」に対応する。
 # GCP で引き上げ申請をしていないプロジェクトの初期値。
 # upload.daily_quota_limit と quota.daily_limit の両方の既定値として使う
 # (同じ数値を2箇所に直書きすると、片方だけ変更したときに不整合になる)。
 DEFAULT_DAILY_QUOTA_LIMIT = 10000
+
+# 1日にアップロードできる動画の本数の既定値。
+# GCP コンソールの「Video Uploads per day」に対応する。
+# 動画のアップロード (videos.insert) は Queries per day ではなく、
+# こちらの本数ベースの独立した枠でカウントされる。
+DEFAULT_DAILY_VIDEO_UPLOADS = 100
 
 
 class AuthConfig(BaseModel):
@@ -44,12 +51,15 @@ class MetadataConfig(BaseModel):
 
 
 class QuotaConfig(BaseModel):
-    # 実際の GCP 上限に合わせて調整する
+    # GCP コンソールの「Queries per day」。実際の上限に合わせて調整する。
     daily_limit: int = DEFAULT_DAILY_QUOTA_LIMIT
     # 予備として残すユニット。orphans / dedupe は1回の全走査で
     # 動画一覧 + プレイリスト走査に約1,000ユニットを消費するため、
     # その分を差し引いた残りを書き込み操作に充てる。
     reserve: int = 1000
+    # GCP コンソールの「Video Uploads per day」(本/日)。
+    # 動画のアップロードは daily_limit ではなくこの本数の枠で制限される。
+    daily_video_uploads: int = DEFAULT_DAILY_VIDEO_UPLOADS
 
 
 class CacheConfig(BaseModel):

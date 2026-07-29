@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from collections import defaultdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +17,7 @@ from rich.progress import (
 )
 
 from ..lib.core.config import config
-from ..lib.core.quota import QuotaExceededError
+from ..lib.core.quota import QuotaExceededError, count_today_uploads
 from ..lib.data.history import HistoryManager
 from ..lib.video.metadata import FileMetadataGenerator
 from ..lib.video.playlist import PlaylistManager
@@ -33,50 +32,51 @@ def check_quota_limit(
     video_files: List[Path],
     history: HistoryManager,
 ) -> bool:
-    """
-    Check if there is enough quota to upload videos today.
-    Returns True if we can proceed, False if we should stop.
+    """本日アップロードできる本数が残っているかを確認する。
+
+    アップロード可否は「Video Uploads per day」(GCP コンソールの実測で
+    既定 100 本/日) という本数ベースの枠で決まる。動画のアップロード
+    (videos.insert) は Queries per day (既定 10,000 units) を消費しない
+    ため、ユニット換算 (1本 1,600 units) で判定してはいけない。
+
+    ここでの見積もりはあくまで事前の目安であり、本数の強制はしない
+    (対象より残りが少なければ警告するだけで処理は続行する)。実際に
+    上限へ到達した場合は YouTube が 429 rateLimitExceeded
+    ('Video Uploads per day') を返し、handle_upload_error が検知して
+    パイプライン全体を停止する。
+
+    Returns: 続行してよければ True。1本もアップロードできないと
+    分かっている場合のみ False。
     """
     if dry_run:
         return True
 
-    COST_PER_UPLOAD = 1600
-    # quota.daily_limit と upload.daily_quota_limit の大きい方を採る。
-    # つまみが2箇所あるため、どちらを引き上げても効くようにする。
-    quota_limit = config.effective_daily_quota()
-    now = datetime.now()
-    today_start = datetime(now.year, now.month, now.day).timestamp()
+    daily_video_uploads = config.quota.daily_video_uploads
+    uploaded_today = count_today_uploads(history)
+    remaining_uploads = max(0, daily_video_uploads - uploaded_today)
 
-    all_records = history.get_all_records(limit=0)
-    today_uploads = [
-        r for r in all_records
-        # timestamp が NULL の行があると None >= float で TypeError になる
-        if r.get("status") == "success" and (r.get("timestamp") or 0) >= today_start
-    ]
-    used_units = len(today_uploads) * COST_PER_UPLOAD
-    remaining_units = max(0, quota_limit - used_units)
-    max_uploadable = remaining_units // COST_PER_UPLOAD
-
-    if remaining_units < COST_PER_UPLOAD:
+    if remaining_uploads <= 0:
         console.print(
-            f"[bold red]Quota不足: 本日の推定使用量 {used_units:,}/{quota_limit:,} ユニット。"
-            f" 残り {remaining_units:,} ユニットでは1件もアップロードできません。[/]"
+            f"[bold red]アップロード上限に到達: 本日 {uploaded_today} 本 / "
+            f"上限 {daily_video_uploads} 本 (Video Uploads per day)。[/]"
         )
         console.print(
-            "[dim]明日以降に再実行するか、settings.yaml の quota.daily_limit を"
-            "実際の GCP クォータ上限に設定してください。[/]"
+            "[dim]クォータのリセット (太平洋時間の深夜 / 日本時間の16〜17時頃) 後に"
+            "再実行するか、settings.yaml の quota.daily_video_uploads を"
+            "実際の GCP の上限に設定してください。[/]"
         )
         return False
-    
-    if max_uploadable < len(video_files):
+
+    if remaining_uploads < len(video_files):
         console.print(
-            f"[bold yellow]Quota警告: 推定残量 {remaining_units:,}/{quota_limit:,} ユニット。"
-            f" 最大 {max_uploadable} 件までアップロード可能（対象: {len(video_files)} 件）。[/]"
+            f"[bold yellow]Quota警告: 本日 {uploaded_today}/{daily_video_uploads} 本"
+            f" アップロード済み。残り {remaining_uploads} 件までアップロード可能"
+            f"（対象: {len(video_files)} 件）。[/]"
         )
     else:
         console.print(
-            f"[dim]Quota残量: {remaining_units:,}/{quota_limit:,} ユニット "
-            f"(本日 {len(today_uploads)} 件アップロード済み)[/]"
+            f"[dim]本日のアップロード可能残数: {remaining_uploads}/"
+            f"{daily_video_uploads} 本 (本日 {uploaded_today} 件アップロード済み)[/]"
         )
     return True
 
