@@ -41,14 +41,17 @@ def check_quota_limit(
         return True
 
     COST_PER_UPLOAD = 1600
-    quota_limit = config.upload.daily_quota_limit
+    # quota.daily_limit と upload.daily_quota_limit の大きい方を採る。
+    # つまみが2箇所あるため、どちらを引き上げても効くようにする。
+    quota_limit = config.effective_daily_quota()
     now = datetime.now()
     today_start = datetime(now.year, now.month, now.day).timestamp()
 
     all_records = history.get_all_records(limit=0)
     today_uploads = [
         r for r in all_records
-        if r.get("status") == "success" and r.get("timestamp", 0) >= today_start
+        # timestamp が NULL の行があると None >= float で TypeError になる
+        if r.get("status") == "success" and (r.get("timestamp") or 0) >= today_start
     ]
     used_units = len(today_uploads) * COST_PER_UPLOAD
     remaining_units = max(0, quota_limit - used_units)
@@ -59,7 +62,10 @@ def check_quota_limit(
             f"[bold red]Quota不足: 本日の推定使用量 {used_units:,}/{quota_limit:,} ユニット。"
             f" 残り {remaining_units:,} ユニットでは1件もアップロードできません。[/]"
         )
-        console.print("[dim]明日以降に再実行するか、settings.yaml の daily_quota_limit を調整してください。[/]")
+        console.print(
+            "[dim]明日以降に再実行するか、settings.yaml の quota.daily_limit を"
+            "実際の GCP クォータ上限に設定してください。[/]"
+        )
         return False
     
     if max_uploadable < len(video_files):

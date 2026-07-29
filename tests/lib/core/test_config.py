@@ -74,6 +74,7 @@ class TestQuotaAndCacheConfig:
         assert cfg.cache.path == "custom_cache.db"
 
     def test_effective_daily_quota_prefers_quota_section(self, tmp_path):
+        """quota.daily_limit の方が大きければそちらを採る。"""
         from src.lib.core.config import AppConfig
 
         path = tmp_path / "settings.yaml"
@@ -99,3 +100,46 @@ class TestQuotaAndCacheConfig:
 
         cfg = AppConfig()
         assert cfg.effective_daily_quota() == 10000
+
+    def test_effective_daily_quota_takes_upload_when_larger(self, tmp_path):
+        """quota セクションが明示されていても、upload.daily_quota_limit の方が
+        大きければそちらを採る (Critical 2)。
+
+        出荷 settings.yaml は quota ブロックを含むため、以前の実装では
+        upload.daily_quota_limit を引き上げても一切反映されなかった。
+        設定箇所が2つあるので、どちらを上げても効くようにする。
+        """
+        from src.lib.core.config import AppConfig
+
+        path = tmp_path / "settings.yaml"
+        path.write_text(
+            "quota:\n  daily_limit: 10000\nupload:\n  daily_quota_limit: 1000000\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig.load(str(path))
+        assert cfg.effective_daily_quota() == 1000000
+
+    def test_effective_daily_quota_uses_max_without_yaml(self):
+        """ファイルを介さずに直接構築した場合も大きい方を採る。"""
+        from src.lib.core.config import AppConfig, QuotaConfig, UploadConfig
+
+        cfg = AppConfig(
+            quota=QuotaConfig(daily_limit=10000),
+            upload=UploadConfig(daily_quota_limit=500000),
+        )
+        assert cfg.effective_daily_quota() == 500000
+
+        cfg2 = AppConfig(
+            quota=QuotaConfig(daily_limit=500000),
+            upload=UploadConfig(daily_quota_limit=10000),
+        )
+        assert cfg2.effective_daily_quota() == 500000
+
+    def test_default_daily_quota_limit_constant_is_shared(self):
+        """既定値のマジックナンバーが定数化されている (Critical 2b)。"""
+        from src.lib.core.config import DEFAULT_DAILY_QUOTA_LIMIT, AppConfig
+
+        cfg = AppConfig()
+        assert DEFAULT_DAILY_QUOTA_LIMIT == 10000
+        assert cfg.upload.daily_quota_limit == DEFAULT_DAILY_QUOTA_LIMIT
+        assert cfg.quota.daily_limit == DEFAULT_DAILY_QUOTA_LIMIT
