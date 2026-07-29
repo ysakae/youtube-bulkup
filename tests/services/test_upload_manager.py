@@ -2,6 +2,7 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
 from googleapiclient.errors import HttpError
 
 from src.services.upload_manager import handle_upload_error
@@ -96,3 +97,106 @@ def test_handle_upload_error_generic_500_does_not_stop_pipeline():
 
     assert not stop_event.is_set()
     history.add_failure.assert_called_once()
+
+
+class TestPostUploadPlaylistSync:
+    """プレイリスト追加の成否を履歴に記録する。"""
+
+    @staticmethod
+    def _args(playlist_manager, history):
+        """post_upload_sync の共通引数を組み立てる。"""
+        from pathlib import Path
+
+        progress = MagicMock()
+        return dict(
+            file_path=Path("/videos/運動会/a.mp4"),
+            file_hash="h1",
+            file_size=100,
+            video_id="vid1",
+            metadata={"title": "t"},
+            target_playlist="運動会",
+            playlist_manager=playlist_manager,
+            uploader=MagicMock(),
+            history=history,
+            progress=progress,
+        )
+
+    @pytest.mark.asyncio
+    async def test_records_success(self):
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.return_value = True
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", True)
+
+    @pytest.mark.asyncio
+    async def test_records_failure_when_add_returns_false(self):
+        """戻り値 False を握りつぶさず記録する (オーファンの発生源)。"""
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.return_value = False
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_records_failure_when_playlist_not_created(self):
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = None
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_quota_error_is_recorded_and_propagated(self):
+        """quota 枯渇は記録した上で上位に伝播させ、アップロード全体を止める。"""
+        from src.lib.core.quota import QuotaExceededError
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.side_effect = QuotaExceededError("out")
+        history = MagicMock()
+
+        with pytest.raises(QuotaExceededError):
+            await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_is_recorded_and_swallowed(self):
+        """quota 以外の例外は従来どおり握りつぶすが、記録は残す。"""
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.side_effect = ValueError("boom")
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_no_playlist_manager_does_not_record(self):
+        """プレイリスト管理を使わない場合は記録しない (NULL のまま)。"""
+        from src.services.upload_manager import post_upload_sync
+
+        history = MagicMock()
+        args = self._args(None, history)
+
+        await post_upload_sync(**args)
+
+        history.set_playlist_synced.assert_not_called()

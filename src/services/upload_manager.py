@@ -18,6 +18,7 @@ from rich.progress import (
 )
 
 from ..lib.core.config import config
+from ..lib.core.quota import QuotaExceededError
 from ..lib.data.history import HistoryManager
 from ..lib.video.metadata import FileMetadataGenerator
 from ..lib.video.playlist import PlaylistManager
@@ -125,16 +126,34 @@ async def post_upload_sync(
     if playlist_manager:
         try:
             pl_id = await asyncio.to_thread(
-                playlist_manager.get_or_create_playlist, 
-                target_playlist, 
+                playlist_manager.get_or_create_playlist,
+                target_playlist,
                 config.upload.privacy_status
             )
             if pl_id:
-                await asyncio.to_thread(
+                ok = await asyncio.to_thread(
                     playlist_manager.add_video_to_playlist, pl_id, video_id
                 )
-                progress.console.print(f"[dim]Added to playlist: {target_playlist}[/]")
+                history.set_playlist_synced(video_id, ok)
+                if ok:
+                    progress.console.print(f"[dim]Added to playlist: {target_playlist}[/]")
+                else:
+                    progress.console.print(
+                        f"[yellow]Warning: プレイリストへの追加に失敗しました: {target_playlist}"
+                        f" (yt-up playlist orphans --fix で後から復旧できます)[/]"
+                    )
+            else:
+                history.set_playlist_synced(video_id, False)
+                progress.console.print(
+                    f"[yellow]Warning: プレイリストを取得/作成できませんでした: {target_playlist}[/]"
+                )
+        except QuotaExceededError:
+            # 枯渇状態で走り続けても意味がないので上位へ伝播させ、全体を停止する
+            history.set_playlist_synced(video_id, False)
+            logger.error(f"Quota exceeded while adding to playlist {target_playlist}")
+            raise
         except Exception as e:
+            history.set_playlist_synced(video_id, False)
             logger.error(f"Failed to add to playlist {target_playlist}: {e}")
             progress.console.print(f"[red]Warning: Failed to add to playlist: {e}[/]")
             
@@ -167,6 +186,12 @@ def handle_upload_error(
     """
     Handle upload exceptions, log failures, and potentially trigger a stop event.
     """
+    if isinstance(e, QuotaExceededError):
+        progress.console.print("[bold red]CRITICAL: YouTube API Quota Exceeded![/]")
+        progress.console.print("Stopping all further uploads. Please try again tomorrow.")
+        stop_event.set()
+        return
+
     if isinstance(e, HttpError):
         if "youtubeSignupRequired" in str(e):
             progress.console.print(f"[bold red]Error processing {file_path.name}: No YouTube channel found.[/]")
