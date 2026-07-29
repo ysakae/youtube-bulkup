@@ -249,6 +249,142 @@ class TestPlaylistCommand(unittest.TestCase):
         self.assertIn("- Video 2 (VID2)", result.output)
 
     @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.HistoryManager")
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.lib.video.manager.VideoManager")
+    def test_orphans_list_shows_breakdown_counts(
+        self, MockVidManager, MockPlManager, mock_get_credentials, MockHistoryMgr, mock_make_cache
+    ):
+        """新設の内訳集計 (割り当て先判明数 / 同期失敗・不明の内訳) を検証する。"""
+        mock_get_credentials.return_value = MagicMock()
+
+        mock_vid = MockVidManager.return_value
+        mock_vid.get_all_uploaded_videos.return_value = [
+            {"id": "VID1", "title": "Video 1"},
+            {"id": "VID2", "title": "Video 2"},
+            {"id": "VID3", "title": "Video 3"},
+        ]
+
+        mock_pl = MockPlManager.return_value
+        mock_pl.get_all_playlists_map.return_value = {}
+
+        mock_hist = MockHistoryMgr.return_value
+        mock_hist.get_record_by_video_id.side_effect = [
+            {"playlist_name": "PlaylistA", "playlist_synced": None},  # 判明・同期状態不明
+            {"playlist_name": "PlaylistB", "playlist_synced": 0},  # 判明・同期失敗
+            None,  # 割り当て先不明
+        ]
+
+        result = runner.invoke(app, ["playlist", "orphans"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("走査したプレイリスト:", result.output)
+        self.assertIn("うち履歴から割り当て先が判明: 2", result.output)
+        self.assertIn("うち割り当て先不明 (スキップ対象): 1", result.output)
+        self.assertIn("追加失敗として記録済み 1", result.output)
+        self.assertIn("不明 (この機能より前の記録) 1", result.output)
+
+    def test_orphans_offline_and_fix_mutually_exclusive(self):
+        """--offline と --fix は同時指定できない (offline は書き込み不可のため)。"""
+        result = runner.invoke(app, ["playlist", "orphans", "--offline", "--fix"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("--offline と --fix は同時に指定できません", result.output)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.HistoryManager")
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.lib.video.manager.VideoManager")
+    def test_orphans_offline_flag_propagates_to_managers(
+        self, MockVidManager, MockPlManager, mock_get_credentials, MockHistoryMgr, mock_make_cache
+    ):
+        """--offline が VideoManager/PlaylistManager まで正しく伝播することを検証する。"""
+        mock_get_credentials.return_value = MagicMock()
+        mock_vid = MockVidManager.return_value
+        mock_vid.get_all_uploaded_videos.return_value = [{"id": "VID1", "title": "Video 1"}]
+        mock_pl = MockPlManager.return_value
+        mock_pl.get_all_playlists_map.return_value = {}
+
+        result = runner.invoke(app, ["playlist", "orphans", "--offline"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("オフラインモード", result.output)
+        mock_vid.get_all_uploaded_videos.assert_called_once_with(refresh=False, offline=True)
+        mock_pl.get_all_playlists_map.assert_called_once_with(refresh=False, offline=True)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.HistoryManager")
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.lib.video.manager.VideoManager")
+    def test_orphans_quota_exceeded_during_fetch_exits_1(
+        self, MockVidManager, MockPlManager, mock_get_credentials, MockHistoryMgr, mock_make_cache
+    ):
+        """取得中に QuotaExceededError が出たら exit 1 で案内を出す。"""
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_vid = MockVidManager.return_value
+        mock_vid.get_all_uploaded_videos.side_effect = QuotaExceededError("out of quota")
+
+        result = runner.invoke(app, ["playlist", "orphans"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("クォータを使い切っているため取得できませんでした", result.output)
+        self.assertIn("--offline を付けるとキャッシュから調査できます", result.output)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.HistoryManager")
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.lib.video.manager.VideoManager")
+    def test_orphans_offline_runtime_error_exits_1(
+        self, MockVidManager, MockPlManager, mock_get_credentials, MockHistoryMgr, mock_make_cache
+    ):
+        """offline でキャッシュが空/未設定なら RuntimeError を案内して exit 1。"""
+        mock_get_credentials.return_value = MagicMock()
+        mock_vid = MockVidManager.return_value
+        mock_vid.get_all_uploaded_videos.side_effect = RuntimeError(
+            "キャッシュが空のため offline モードで実行できません。"
+        )
+
+        result = runner.invoke(app, ["playlist", "orphans", "--offline"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("キャッシュが空のため", result.output)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.lib.video.manager.VideoManager")
+    @patch("src.commands.playlist.HistoryManager")
+    def test_orphans_fix_limit_zero_stops_before_assigning(
+        self, MockHistoryMgr, MockVidManager, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        """本日の推定残量が0件なら --fix を指定しても何も割り当てない。"""
+        from src.lib.core.config import config
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_vid = MockVidManager.return_value
+        mock_vid.get_all_uploaded_videos.return_value = [{"id": "VID1", "title": "Video 1"}]
+        mock_pl = MockPlManager.return_value
+        mock_pl.get_all_playlists_map.return_value = {}
+
+        mock_hist = MockHistoryMgr.return_value
+        mock_hist.get_all_records.return_value = []
+        mock_hist.get_record_by_video_id.return_value = None
+
+        with patch.object(type(config), "effective_daily_quota", lambda self: 0), \
+             patch.object(config.quota, "reserve", 0):
+            result = runner.invoke(app, ["playlist", "orphans", "--fix", "-y"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("本日の推定残量では1件も処理できません", result.output)
+        mock_pl.get_or_create_playlist.assert_not_called()
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
     @patch("src.commands.playlist.get_credentials")
     @patch("src.commands.playlist.PlaylistManager")
     @patch("src.lib.video.manager.VideoManager")
@@ -631,6 +767,53 @@ class TestOrphansQuotaControl:
         _fix_orphans(orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True)
 
         pl_manager.get_or_create_playlist.assert_called_once_with("2011運動会")
+
+    def test_max_items_does_not_bypass_daily_budget(self, monkeypatch):
+        """--max-items に予算より大きい値を渡しても、実際の予算 (本日の残量)
+
+        で頭打ちになることを検証する。--max-items は「予算内での上限」で
+        あるべきで、予算そのものを拡張する抜け道になってはいけない。
+        """
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        # effective_daily_quota=10000, reserve=9900, used=0 -> budget=100
+        # -> budget_items = 100 // 50 = 2 件
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 9900)
+
+        orphans = [{"id": f"v{i}", "title": f"動画{i}"} for i in range(5)]
+
+        with patch("src.commands.playlist.get_credentials") as mock_get_credentials, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.lib.video.manager.VideoManager") as MockVidManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_get_credentials.return_value = MagicMock()
+            mock_vid = MockVidManager.return_value
+            mock_vid.get_all_uploaded_videos.return_value = orphans
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_all_playlists_map.return_value = {}
+            mock_pl.get_or_create_playlist.return_value = "PL1"
+            mock_pl.add_video_to_playlist.return_value = True
+
+            mock_hist = MockHistoryMgr.return_value
+            mock_hist.get_all_records.return_value = []
+            mock_hist.get_record_by_video_id.return_value = {"playlist_name": "運動会"}
+
+            result = runner.invoke(
+                cli_app, ["playlist", "orphans", "--fix", "-y", "--max-items", "5000"]
+            )
+
+        assert result.exit_code == 0
+        # --max-items 5000 を要求しても、予算 (2件分) で頭打ちになる
+        assert mock_pl.add_video_to_playlist.call_count == 2, (
+            "--max-items が予算を上書きしてしまっている"
+        )
+        assert "残り 3 件" in result.output
 
 
 if __name__ == "__main__":

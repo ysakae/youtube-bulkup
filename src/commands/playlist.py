@@ -293,10 +293,16 @@ def list_orphans(
         console.print("[bold red]--offline と --fix は同時に指定できません。[/]")
         raise typer.Exit(code=1)
 
-    cache = _make_cache()
-    history = HistoryManager()
+    cache = None
+    history = None
 
     try:
+        # cache / history の生成自体も try に含める。
+        # try の外で生成すると、片方が生成できた直後にもう片方の
+        # 生成が例外を投げた場合に finally を通らず接続が漏れる。
+        cache = _make_cache()
+        history = HistoryManager()
+
         credentials = get_credentials()
         pl_manager = PlaylistManager(credentials, cache=cache)
         from ..lib.video.manager import VideoManager
@@ -329,7 +335,7 @@ def list_orphans(
         orphans = [vid for vid in all_videos if vid["id"] not in videos_in_playlists]
 
         console.print(f"[bold]Total Videos:[/] {len(all_videos)}")
-        console.print(f"[bold]Playlists Scanned:[/] {len(playlist_map)}")
+        console.print(f"[bold]走査したプレイリスト:[/] {len(playlist_map)}")
         console.print(f"[bold]Videos in Playlists:[/] {len(videos_in_playlists)}")
         console.print(f"[bold red]Orphan Videos:[/] {len(orphans)}")
 
@@ -366,7 +372,11 @@ def list_orphans(
             console.print("\n[dim]Run with --fix to attempt automatic assignment based on local history.[/]")
             return
 
-        limit = max_items if max_items is not None else _default_max_items(history)
+        # 予算は常に本日の残量 (budget_items) から決める。--max-items は
+        # あくまで「予算内での上限」であり、予算そのものを拡張してはいけない
+        # (--max-items に大きな値を渡すとクォータ安全弁が消える不具合を防ぐ)。
+        budget_items = _default_max_items(history)
+        limit = min(max_items, budget_items) if max_items is not None else budget_items
         if limit <= 0:
             console.print(
                 "[bold red]本日の推定残量では1件も処理できません。"
@@ -374,7 +384,7 @@ def list_orphans(
             )
             return
 
-        ledger = QuotaLedger(limit * COSTS["insert"])
+        ledger = QuotaLedger(budget_items * COSTS["insert"])
         assigned, remaining = _fix_orphans(orphans, pl_manager, history, ledger, limit, yes)
 
         console.print(
@@ -388,6 +398,7 @@ def list_orphans(
             )
 
     finally:
-        history.close()
+        if history is not None:
+            history.close()
         if cache is not None:
             cache.close()

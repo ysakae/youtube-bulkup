@@ -268,3 +268,149 @@ class TestVideoManager(unittest.TestCase):
 
         videos = self.manager.get_all_uploaded_videos()
         self.assertEqual(videos, [])
+
+
+class TestVideoManagerCacheIntegration(unittest.TestCase):
+    """VideoManager の SnapshotCache 連携 (refresh/offline/quota) を検証する。
+
+    tests/lib/video/test_playlist.py の TestPlaylistCacheIntegration と
+    同じ書き方 (一時DBファイル + tearDown で後片付け) に揃えている。
+    """
+
+    def setUp(self):
+        import tempfile
+
+        from src.lib.data.snapshot import SnapshotCache
+
+        self.mock_creds = MagicMock()
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.cache = SnapshotCache(db_path=self.tmp.name, ttl_hours=24)
+
+    def tearDown(self):
+        import os
+
+        self.cache.close()
+        for suffix in ["", "-wal", "-shm"]:
+            path = self.tmp.name + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+    @staticmethod
+    def _channel_response():
+        return {
+            "items": [{
+                "contentDetails": {
+                    "relatedPlaylists": {"uploads": "PL_UPLOADS"}
+                }
+            }]
+        }
+
+    @patch("src.lib.video.manager.build")
+    def test_videos_are_saved_to_cache(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.channels().list().execute.return_value = self._channel_response()
+        mock_service.playlistItems().list().execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}, "snippet": {"title": "T1"}}],
+            "nextPageToken": None,
+        }
+        mock_service.videos().list().execute.return_value = {
+            "items": [{"id": "v1", "status": {"privacyStatus": "public"}}]
+        }
+
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_uploaded_videos()
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            self.cache.load_videos(), [{"id": "v1", "title": "T1", "privacy": "public"}]
+        )
+        self.assertTrue(self.cache.is_fresh("videos"))
+
+    @patch("src.lib.video.manager.build")
+    def test_second_call_uses_cache_without_api(self, mock_build):
+        self.cache.save_videos([{"id": "v1", "title": "T1", "privacy": "public"}])
+        self.cache.mark_complete("videos")
+
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_uploaded_videos()
+
+        self.assertEqual(result, [{"id": "v1", "title": "T1", "privacy": "public"}])
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.manager.build")
+    def test_refresh_bypasses_cache(self, mock_build):
+        self.cache.save_videos([{"id": "old", "title": "旧", "privacy": "public"}])
+        self.cache.mark_complete("videos")
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.channels().list().execute.return_value = self._channel_response()
+        mock_service.playlistItems().list().execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v2"}, "snippet": {"title": "T2"}}],
+            "nextPageToken": None,
+        }
+        mock_service.videos().list().execute.return_value = {
+            "items": [{"id": "v2", "status": {"privacyStatus": "private"}}]
+        }
+
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_uploaded_videos(refresh=True)
+
+        self.assertEqual(result, [{"id": "v2", "title": "T2", "privacy": "private"}])
+
+    @patch("src.lib.video.manager.build")
+    def test_offline_uses_stale_cache_without_api(self, mock_build):
+        """TTL 切れでも offline ならキャッシュを使う (quota 枯渇中の調査用)。"""
+        self.cache.save_videos([{"id": "v1", "title": "T1", "privacy": "public"}])
+        self.cache.mark_complete("videos")
+        self.cache.ttl_seconds = 0
+
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_uploaded_videos(offline=True)
+
+        self.assertEqual(result, [{"id": "v1", "title": "T1", "privacy": "public"}])
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.manager.build")
+    def test_offline_without_cache_raises(self, mock_build):
+        manager = VideoManager(self.mock_creds, cache=None)
+        with self.assertRaises(RuntimeError):
+            manager.get_all_uploaded_videos(offline=True)
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.manager.build")
+    def test_offline_with_empty_cache_raises(self, mock_build):
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+        with self.assertRaises(RuntimeError):
+            manager.get_all_uploaded_videos(offline=True)
+        mock_build.assert_not_called()
+
+    @staticmethod
+    def _quota_error():
+        import httplib2
+
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    @patch("src.lib.video.manager.build")
+    def test_quota_error_raises_and_does_not_mark_complete(self, mock_build):
+        """走査中にクォータが尽きたら QuotaExceededError を送出し、
+
+        キャッシュを「完了」と記録しない (部分的な取得結果を新鮮な
+        キャッシュと誤認させないため)。
+        """
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.channels().list().execute.side_effect = self._quota_error()
+
+        manager = VideoManager(self.mock_creds, cache=self.cache)
+
+        with self.assertRaises(QuotaExceededError):
+            manager.get_all_uploaded_videos()
+
+        self.assertFalse(self.cache.is_fresh("videos"))
