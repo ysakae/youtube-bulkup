@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS uploads (
     status TEXT DEFAULT 'success',
     error TEXT,
     playlist_name TEXT,
-    file_size INTEGER DEFAULT 0
+    file_size INTEGER DEFAULT 0,
+    playlist_synced INTEGER DEFAULT NULL
 );
 """
 
@@ -34,6 +35,7 @@ _CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_video_id ON uploads (video_id);",
     "CREATE INDEX IF NOT EXISTS idx_status ON uploads (status);",
     "CREATE INDEX IF NOT EXISTS idx_timestamp ON uploads (timestamp);",
+    "CREATE INDEX IF NOT EXISTS idx_playlist_synced ON uploads (playlist_synced);",
 ]
 
 
@@ -48,11 +50,26 @@ class HistoryManager:
         self._migrate_from_tinydb()
 
     def _init_schema(self):
-        """テーブルとインデックスを作成する。"""
+        """テーブルとインデックスを作成し、既存DBに不足列があれば追加する。"""
         self.conn.execute(_CREATE_TABLE_SQL)
+        self._migrate_add_playlist_synced()
         for idx_sql in _CREATE_INDEX_SQL:
             self.conn.execute(idx_sql)
         self.conn.commit()
+
+    def _migrate_add_playlist_synced(self) -> None:
+        """playlist_synced 列を後付けする (冪等)。
+
+        値の意味: 1=プレイリスト追加成功 / 0=失敗 / NULL=不明。
+        既存レコードを 0 にすると全件がオーファン候補になってしまうため、
+        NULL (不明) のままにして 0 と区別する。
+        """
+        columns = [row[1] for row in self.conn.execute("PRAGMA table_info(uploads)")]
+        if "playlist_synced" not in columns:
+            self.conn.execute(
+                "ALTER TABLE uploads ADD COLUMN playlist_synced INTEGER DEFAULT NULL"
+            )
+            logger.info("uploads テーブルに playlist_synced 列を追加しました。")
 
     def _extract_records_from_json(self, json_path: Path) -> list:
         with open(json_path, "r", encoding="utf-8") as f:
@@ -190,7 +207,7 @@ class HistoryManager:
             self.conn.execute(
                 """UPDATE uploads SET
                    file_path=?, video_id=?, metadata=?, timestamp=?,
-                   status='success', error=NULL, playlist_name=?, file_size=?
+                   status='success', error=NULL, playlist_name=?, file_size=?, playlist_synced=NULL
                    WHERE file_hash=?""",
                 (str(file_path), video_id, metadata_json, now, playlist_name, file_size, file_hash),
             )
@@ -224,7 +241,7 @@ class HistoryManager:
             self.conn.execute(
                 """UPDATE uploads SET
                    file_path=?, video_id=NULL, metadata=?, timestamp=?,
-                   status='failed', error=?, playlist_name=?, file_size=?
+                   status='failed', error=?, playlist_name=?, file_size=?, playlist_synced=NULL
                    WHERE file_hash=?""",
                 (str(file_path), metadata_json, now, str(error_msg), playlist_name, file_size, file_hash),
             )
@@ -274,9 +291,18 @@ class HistoryManager:
         return self._row_to_dict(row) if row else None
 
     def get_record_by_video_id(self, video_id: str) -> Optional[Dict[str, Any]]:
-        """Get an upload record by video ID."""
+        """Get an upload record by video ID.
+
+        video_id に UNIQUE 制約は無く、同一 video_id の行が複数ありうる。
+        set_playlist_synced が更新するのは
+        ORDER BY timestamp DESC, rowid DESC の最新1行なので、ここでも
+        同じ並び順にしないと読み書きの対象がずれてしまう
+        (ORDER BY 無しだと idx_video_id 経由で最古の行が返る)。
+        """
         cursor = self.conn.execute(
-            "SELECT * FROM uploads WHERE video_id = ? LIMIT 1", (video_id,)
+            "SELECT * FROM uploads WHERE video_id = ? "
+            "ORDER BY timestamp DESC, rowid DESC LIMIT 1",
+            (video_id,),
         )
         row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
@@ -387,6 +413,36 @@ class HistoryManager:
         logger.info(f"Imported {imported} records, skipped {skipped}")
         return imported, skipped
 
-    def close(self):
+    def set_playlist_synced(self, video_id: str, synced: bool) -> None:
+        """プレイリストへの追加の成否を記録する。
+
+        1=成功 / 0=失敗。該当レコードが無い場合は何もしない。
+
+        video_id に UNIQUE 制約は無く、インポート等で同一 video_id の行が
+        複数できうる。防御的に、最新の1行だけを更新する
+        (WHERE video_id = ? だけでは全件を巻き込んでしまう)。
+        SQLite の UPDATE ... LIMIT はビルドオプション依存のため、
+        rowid を絞り込む副問い合わせで代用する。
+        """
+        self.conn.execute(
+            "UPDATE uploads SET playlist_synced = ? WHERE rowid = ("
+            "  SELECT rowid FROM uploads WHERE video_id = ? "
+            "  ORDER BY timestamp DESC, rowid DESC LIMIT 1"
+            ")",
+            (1 if synced else 0, video_id),
+        )
+        self.conn.commit()
+
+    def get_unsynced_records(self) -> list:
+        """プレイリストへの追加に失敗した (playlist_synced = 0) レコードを返す。
+
+        NULL (不明) は含めない。不明なものは API で実態を確認する必要がある。
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM uploads WHERE playlist_synced = 0 ORDER BY timestamp DESC"
+        )
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def close(self) -> None:
         """Close the database connection."""
         self.conn.close()

@@ -1,13 +1,15 @@
-import os
-import shutil
 import tempfile
-from unittest.mock import MagicMock, patch, mock_open
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
-from pathlib import Path
 
 # Import the functions directly
-from src.lib.auth.auth import authenticate_new_profile, get_authenticated_service, logout
+from src.lib.auth.auth import (
+    authenticate_new_profile,
+    get_authenticated_service,
+    logout,
+)
 from src.lib.auth.profiles import get_active_profile, list_profiles, set_active_profile
 
 

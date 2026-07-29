@@ -1,8 +1,8 @@
 import json
 import os
 import tempfile
-from pathlib import Path
 from typing import Generator
+
 import pytest
 
 from src.lib.data.history import HistoryManager
@@ -300,3 +300,160 @@ def test_migrate_from_tinydb(tmp_path):
         assert record2["error"] == "Quota Exceeded"
     finally:
         hm.close()
+
+
+class TestPlaylistSynced:
+    def test_column_exists_after_init(self, history):
+        cols = [r[1] for r in history.conn.execute("PRAGMA table_info(uploads)")]
+        assert "playlist_synced" in cols
+
+    def test_new_record_defaults_to_null(self, history):
+        """既存の add_record 経路では未設定 (NULL = 不明) になる。"""
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        rec = history.get_record_by_video_id("vid1")
+        assert rec["playlist_synced"] is None
+
+    def test_set_playlist_synced_true(self, history):
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", True)
+        assert history.get_record_by_video_id("vid1")["playlist_synced"] == 1
+
+    def test_set_playlist_synced_false(self, history):
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", False)
+        assert history.get_record_by_video_id("vid1")["playlist_synced"] == 0
+
+    def test_set_playlist_synced_is_overwritable(self, history):
+        """後から --fix で復旧したら 0 -> 1 に更新できる。"""
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", False)
+        history.set_playlist_synced("vid1", True)
+        assert history.get_record_by_video_id("vid1")["playlist_synced"] == 1
+
+    def test_set_playlist_synced_unknown_video_is_noop(self, history):
+        """存在しない video_id でも例外を投げない。"""
+        history.set_playlist_synced("nope", True)
+        assert history.get_record_by_video_id("nope") is None
+
+    def test_set_playlist_synced_updates_only_one_row(self, history):
+        """同一 video_id の行が複数あっても1行だけ更新する (防御的措置)。
+
+        video_id に UNIQUE 制約は無いため、インポート等で重複しうる。
+        WHERE video_id = ? だけでは全件を巻き込んで更新してしまう。
+        """
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/a.mp4', 'h1', 'dup', 100)"
+        )
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/b.mp4', 'h2', 'dup', 200)"
+        )
+        history.conn.commit()
+
+        history.set_playlist_synced("dup", True)
+
+        rows = history.conn.execute(
+            "SELECT timestamp, playlist_synced FROM uploads WHERE video_id = 'dup' "
+            "ORDER BY timestamp"
+        ).fetchall()
+        synced = [r["playlist_synced"] for r in rows]
+        assert synced.count(1) == 1, "複数行がまとめて更新されている"
+        assert rows[-1]["playlist_synced"] == 1, "最新の行が更新されるべき"
+
+    def test_get_record_by_video_id_reads_the_row_set_playlist_synced_wrote(
+        self, history
+    ):
+        """同一 video_id の行が複数あっても、set_playlist_synced が更新した
+        行 (timestamp/rowid が最大の行) を get_record_by_video_id で読める
+        こと (回帰2)。
+
+        set_playlist_synced は ORDER BY timestamp DESC, rowid DESC で
+        最新1行を更新するが、get_record_by_video_id に同じ ORDER BY が
+        無いと idx_video_id 経由で最古の行が返り、書いた行と読む行が
+        食い違って playlist_synced が永久に NULL に見えてしまう。
+        """
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/a.mp4', 'h1', 'dup', 100)"
+        )
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/b.mp4', 'h2', 'dup', 200)"
+        )
+        history.conn.commit()
+
+        history.set_playlist_synced("dup", True)
+        record = history.get_record_by_video_id("dup")
+
+        assert record["file_path"] == "/b.mp4", "最新行 (rowid/timestamp 最大) を読むべき"
+        assert record["playlist_synced"] == 1
+
+    def test_get_unsynced_records_returns_only_zero(self, history):
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.add_record("/b.mp4", "h2", "vid2", {}, playlist_name="PL")
+        history.add_record("/c.mp4", "h3", "vid3", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", False)
+        history.set_playlist_synced("vid2", True)
+        # vid3 は NULL のまま
+
+        unsynced = history.get_unsynced_records()
+        assert [r["video_id"] for r in unsynced] == ["vid1"]
+
+    def test_get_unsynced_records_empty(self, history):
+        assert history.get_unsynced_records() == []
+
+    def test_migration_is_idempotent_on_existing_db(self, temp_db_path):
+        """既存DB (playlist_synced 列なし) を開いても壊れず、既存行は NULL になる。"""
+        import sqlite3
+
+        conn = sqlite3.connect(temp_db_path)
+        conn.execute(
+            """CREATE TABLE uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT NOT NULL, file_hash TEXT NOT NULL, video_id TEXT,
+                metadata TEXT DEFAULT '{}', timestamp REAL DEFAULT 0,
+                status TEXT DEFAULT 'success', error TEXT,
+                playlist_name TEXT, file_size INTEGER DEFAULT 0
+            );"""
+        )
+        conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, status) "
+            "VALUES ('/old.mp4', 'oldhash', 'oldvid', 'success')"
+        )
+        conn.commit()
+        conn.close()
+
+        h1 = HistoryManager(db_path=temp_db_path)
+        assert h1.get_record_by_video_id("oldvid")["playlist_synced"] is None
+        h1.close()
+
+        # 2回目の初期化でも ALTER TABLE が重複実行されない
+        h2 = HistoryManager(db_path=temp_db_path)
+        assert h2.get_record_by_video_id("oldvid")["playlist_synced"] is None
+        h2.close()
+
+    def test_add_record_resets_playlist_synced(self, history):
+        """upsert で video_id が変わったら同期状態は不明(NULL)に戻す。
+
+        別の動画に置き換わった以上、古い同期状態は無関係な情報になるため。
+        """
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", True)
+
+        # 同じ file_hash で別の video_id に上書き (--force 再アップロード相当)
+        history.add_record("/a.mp4", "h1", "vid2", {}, playlist_name="PL")
+
+        assert history.get_record_by_video_id("vid2")["playlist_synced"] is None
+
+    def test_add_failure_resets_playlist_synced(self, history):
+        """失敗記録への上書きでも同期状態は不明(NULL)に戻す。"""
+        history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
+        history.set_playlist_synced("vid1", True)
+
+        history.add_failure("/a.mp4", "h1", "エラー", playlist_name="PL")
+
+        rows = list(history.conn.execute(
+            "SELECT playlist_synced FROM uploads WHERE file_hash = 'h1'"
+        ))
+        assert rows[0][0] is None

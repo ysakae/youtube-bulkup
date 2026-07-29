@@ -1,6 +1,7 @@
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
+
 from typer.testing import CliRunner
+
 from src.main import app
 
 runner = CliRunner()

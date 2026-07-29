@@ -15,6 +15,57 @@ upload:
   privacy_status: "private"  # private, public, unlisted
   daily_quota_limit: 10000   # YouTube API daily quota limit (units)
 
+# Quota settings
+#
+# GCP コンソール (プロジェクト youtube-backup-472106) の
+# YouTube Data API v3 で確認した実値 (2026-07-29 時点、引き上げ申請は未実施):
+#   Queries per day                        10,000    <- daily_limit
+#   Video Uploads per day                     100    <- daily_video_uploads
+#   Video Uploads per minute                  100
+#   Search Queries per day                    100
+#   Search Queries per minute                 100
+#   Video Batch Get Stats Queries per day  10,000
+#   Video Batch Get Stats Queries/minute      600
+#   Queries per minute                  1,800,000
+#   Queries per minute per user           180,000
+#
+# 重要: 動画のアップロード (videos.insert) は「Video Uploads per day」という
+# 本数ベースの独立した枠でカウントされ、Queries per day は消費しない。
+# (公式ドキュメントの 1,600 units/本で計算すると 7 本で 10,000 を超えるはず
+#  だが、実際には1日 95〜104 本のアップロードが成功している)
+# Queries per day を消費するのは、プレイリストへの追加 (50)、プレイリストの
+# 作成・削除 (50)、一覧の取得 (1) など。
+quota:
+  # Queries per day の上限 (ユニット)。引き上げ手順は docs/QUOTA_INCREASE.md。
+  #
+  # この上限だと playlist orphans --fix は 1 日あたり最大 180 件
+  # ((10000 - 1000) / 50) しか処理できない (アップロードを併用した日は
+  # そのプレイリスト追加分だけさらに減る)。オーファンが多い場合は
+  # 複数日に分けて実行するか、クォータの引き上げを申請すること。
+  #
+  # この値が実際より小さい場合: 1 回あたりの処理件数が少なくなるだけで安全。
+  # この値が実際より大きい場合: 403 quotaExceeded を受け取った時点で
+  #   自動的に中断し残件を報告するので、こちらも安全側に倒れる。
+  #
+  # 下の upload.daily_quota_limit と大きい方が採用される。
+  daily_limit: 10000
+  # 予備として残すユニット。
+  # 根拠: orphans / dedupe は判定のために毎回全走査を行い、
+  # 動画一覧 + 全プレイリストの中身 + プレイリスト一覧で
+  # 1回あたり約 1,000 ユニットを消費する (動画 10,000 本 /
+  # プレイリスト 550 個規模の場合)。この読み取り分を書き込みの
+  # 予算から除いておくため。
+  reserve: 1000
+  # 1日にアップロードできる動画の本数 (Video Uploads per day)。
+  # 上限に達すると YouTube は 429 rateLimitExceeded を返し、
+  # 本ツールはそれを検知してアップロードを停止する。
+  daily_video_uploads: 100
+
+# Cache settings (YouTube 側の状態のローカルキャッシュ)
+cache:
+  enabled: true
+  ttl_hours: 24
+  path: "youtube_cache.db"
 
 # Database path
 history_db: "upload_history.db"

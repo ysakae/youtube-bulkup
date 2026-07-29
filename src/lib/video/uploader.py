@@ -15,28 +15,9 @@ from tenacity import (
 )
 
 from ..core.config import config
+from ..core.quota import is_quota_error
 
 logger = logging.getLogger("youtube_up")
-
-
-def _is_daily_upload_quota_error(exception: HttpError) -> bool:
-    """1日のアップロード上限超過 (リセットまで回復しない) を判定する。
-
-    YouTube は以下を1日のアップロード制限として返す:
-      - HTTP 429 + 'Video Uploads per day'  (rateLimitExceeded)
-      - HTTP 403 + 'quotaExceeded'
-      - HTTP 400 + 'uploadLimitExceeded'
-    これらはリトライしても無意味なので、即座に失敗させる。
-    """
-    msg = str(exception)
-    status = exception.resp.status
-    if status == 429 and "Video Uploads per day" in msg:
-        return True
-    if status == 403 and "quotaExceeded" in msg:
-        return True
-    if status == 400 and "uploadLimitExceeded" in msg:
-        return True
-    return False
 
 
 def should_retry_exception(exception: BaseException) -> bool:
@@ -44,8 +25,8 @@ def should_retry_exception(exception: BaseException) -> bool:
     if isinstance(exception, (socket.error, socket.timeout)):
         return True
     if isinstance(exception, HttpError):
-        # 1日のアップロード上限超過はリトライしない (翌日まで回復しない)
-        if _is_daily_upload_quota_error(exception):
+        # クォータ枯渇はリトライしない (翌日まで回復しない)
+        if is_quota_error(exception):
             return False
         # Retry 5xx server errors, 429 Too Many Requests, and 408 Request Timeout
         if exception.resp.status in [408, 429, 500, 502, 503, 504]:

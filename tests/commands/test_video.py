@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
+
 from typer.testing import CliRunner
+
 from src.main import app
 
 runner = CliRunner()

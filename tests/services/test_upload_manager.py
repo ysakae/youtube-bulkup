@@ -2,8 +2,10 @@
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
 from googleapiclient.errors import HttpError
 
+from src.lib.core.quota import QuotaExceededError
 from src.services.upload_manager import handle_upload_error
 
 
@@ -96,3 +98,233 @@ def test_handle_upload_error_generic_500_does_not_stop_pipeline():
 
     assert not stop_event.is_set()
     history.add_failure.assert_called_once()
+
+
+def test_handle_upload_error_quota_exceeded_error_stops_pipeline_without_failure_record():
+    """QuotaExceededError は isinstance(e, HttpError) より前の専用分岐で
+    処理され、stop_event をセットする。HttpError ではないため
+    `isinstance(e, HttpError)` の順序が崩れると else 節に落ちて
+    stop_event が立たなくなる回帰を検知するためのテスト。
+
+    アップロード自体は成功しており失敗記録の対象ではないため、
+    history.add_failure は呼ばれない
+    (playlist_synced への記録は post_upload_sync 側の責務)。"""
+    file_path = MagicMock()
+    file_path.name = "v1.mp4"
+    progress = MagicMock()
+    history = MagicMock()
+    stop_event = asyncio.Event()
+
+    handle_upload_error(
+        QuotaExceededError("out"),
+        file_path=file_path,
+        file_hash="hash1",
+        file_size=1000,
+        target_playlist="pl",
+        stop_event=stop_event,
+        progress=progress,
+        history=history,
+    )
+
+    assert stop_event.is_set(), "quota 枯渇時は stop_event がセットされるべき"
+    history.add_failure.assert_not_called()
+
+
+class TestPostUploadPlaylistSync:
+    """プレイリスト追加の成否を履歴に記録する。"""
+
+    @staticmethod
+    def _args(playlist_manager, history):
+        """post_upload_sync の共通引数を組み立てる。"""
+        from pathlib import Path
+
+        progress = MagicMock()
+        return dict(
+            file_path=Path("/videos/運動会/a.mp4"),
+            file_hash="h1",
+            file_size=100,
+            video_id="vid1",
+            metadata={"title": "t"},
+            target_playlist="運動会",
+            playlist_manager=playlist_manager,
+            uploader=MagicMock(),
+            history=history,
+            progress=progress,
+        )
+
+    @pytest.mark.asyncio
+    async def test_records_success(self):
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.return_value = True
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", True)
+
+    @pytest.mark.asyncio
+    async def test_records_failure_when_add_returns_false(self):
+        """戻り値 False を握りつぶさず記録する (オーファンの発生源)。"""
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.return_value = False
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_records_failure_when_playlist_not_created(self):
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = None
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_quota_error_is_recorded_and_propagated(self):
+        """quota 枯渇は記録した上で上位に伝播させ、アップロード全体を止める。"""
+        from src.lib.core.quota import QuotaExceededError
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.return_value = "PL1"
+        pl.add_video_to_playlist.side_effect = QuotaExceededError("out")
+        history = MagicMock()
+
+        with pytest.raises(QuotaExceededError):
+            await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_generic_exception_is_recorded_and_swallowed(self):
+        """quota 以外の例外は従来どおり握りつぶすが、記録は残す。"""
+        from src.services.upload_manager import post_upload_sync
+
+        pl = MagicMock()
+        pl.get_or_create_playlist.side_effect = ValueError("boom")
+        history = MagicMock()
+
+        await post_upload_sync(**self._args(pl, history))
+
+        history.set_playlist_synced.assert_called_once_with("vid1", False)
+
+    @pytest.mark.asyncio
+    async def test_no_playlist_manager_does_not_record(self):
+        """プレイリスト管理を使わない場合は記録しない (NULL のまま)。"""
+        from src.services.upload_manager import post_upload_sync
+
+        history = MagicMock()
+        args = self._args(None, history)
+
+        await post_upload_sync(**args)
+
+        history.set_playlist_synced.assert_not_called()
+
+
+class TestCheckQuotaLimit:
+    """アップロード可否は「Video Uploads per day」(本数) で判定する。
+
+    動画のアップロード (videos.insert) は Queries per day (10,000 units)
+    ではなく、本数ベースの独立した枠でカウントされる。
+    """
+
+    @staticmethod
+    def _history(upload_count: int, timestamp=None):
+        """本日 upload_count 本アップロード済みの履歴スタブを作る。"""
+        import time
+
+        ts = time.time() if timestamp is None else timestamp
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": ts} for _ in range(upload_count)
+        ]
+        return history
+
+    @staticmethod
+    def _files(count: int):
+        from pathlib import Path
+
+        return [Path(f"/videos/a{i}.mp4") for i in range(count)]
+
+    def _run(self, monkeypatch, uploaded_today: int, file_count: int,
+             daily_video_uploads: int = 100, timestamp=None):
+        """check_quota_limit を実行し、(戻り値, 出力文字列) を返す。"""
+        from unittest.mock import patch
+
+        from src.services import upload_manager
+
+        monkeypatch.setattr(
+            upload_manager.config.quota, "daily_video_uploads", daily_video_uploads
+        )
+        history = self._history(uploaded_today, timestamp=timestamp)
+        with patch.object(upload_manager, "console") as mock_console:
+            result = upload_manager.check_quota_limit(
+                False, self._files(file_count), history
+            )
+        output = " ".join(str(c) for c in mock_console.print.call_args_list)
+        return result, output
+
+    def test_dry_run_skips_check(self):
+        from src.services.upload_manager import check_quota_limit
+
+        history = MagicMock()
+        assert check_quota_limit(True, self._files(3), history) is True
+        history.get_all_records.assert_not_called()
+
+    def test_allows_upload_when_slots_remain(self, monkeypatch):
+        result, output = self._run(monkeypatch, uploaded_today=0, file_count=3)
+
+        assert result is True
+        assert "100" in output, "残りのアップロード可能本数が表示される"
+
+    def test_warns_when_files_exceed_remaining_uploads(self, monkeypatch):
+        result, output = self._run(monkeypatch, uploaded_today=98, file_count=5)
+
+        assert result is True, "警告のみで処理は続行する"
+        assert "2" in output and "警告" in output
+
+    def test_stops_when_daily_upload_limit_reached(self, monkeypatch):
+        result, output = self._run(monkeypatch, uploaded_today=100, file_count=1)
+
+        assert result is False
+        assert "Video Uploads per day" in output
+
+    def test_does_not_stop_after_seven_uploads(self, monkeypatch):
+        """回帰防止: 旧実装は 1本=1,600 units 換算だったため、
+        7 本アップロードした時点で残量 0 と誤判定し、その日は
+        アップロードコマンドごと停止していた。"""
+        result, output = self._run(monkeypatch, uploaded_today=7, file_count=10)
+
+        assert result is True
+        assert "93" in output, "残り 93 本と見積もられる"
+
+    def test_ignores_yesterday_uploads(self, monkeypatch):
+        import time
+
+        result, output = self._run(
+            monkeypatch, uploaded_today=100, file_count=1,
+            timestamp=time.time() - 86400 * 2,
+        )
+
+        assert result is True, "前々日のアップロードは本日の枠を消費しない"
+
+    def test_respects_configured_daily_video_uploads(self, monkeypatch):
+        """GCP 側で本数上限を引き上げたら設定で反映できる。"""
+        result, output = self._run(
+            monkeypatch, uploaded_today=100, file_count=1, daily_video_uploads=250
+        )
+
+        assert result is True
+        assert "150" in output

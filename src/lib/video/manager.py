@@ -5,6 +5,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
+from ..core.quota import QuotaExceededError, is_quota_error
+from ..data.snapshot import SnapshotCache
+
 logger = logging.getLogger("youtube_up")
 
 
@@ -13,8 +16,9 @@ class VideoManager:
     Manages general YouTube Video interactions (metadata, settings, deletion).
     """
 
-    def __init__(self, credentials):
+    def __init__(self, credentials, cache: Optional[SnapshotCache] = None):
         self.credentials = credentials
+        self._cache = cache
 
     def update_privacy_status(self, video_id: str, privacy_status: str) -> bool:
         """
@@ -146,11 +150,37 @@ class VideoManager:
             logger.error(f"Failed to delete video {video_id}: {e}")
             return False
 
-    def get_all_uploaded_videos(self) -> List[Dict[str, str]]:
+    def get_all_uploaded_videos(
+        self, refresh: bool = False, offline: bool = False
+    ) -> List[Dict[str, str]]:
         """
         Retrieves all videos uploaded by the authenticated user.
         公開状態 (privacyStatus) も含めて返す。
+
+        refresh=True: キャッシュを無視して API から取り直す
+        offline=True: API を叩かず、期限切れでもキャッシュを使う
+                      (キャッシュが空なら RuntimeError)
         """
+        if offline:
+            if self._cache is None:
+                raise RuntimeError(
+                    "offline モードにはキャッシュが必要です。"
+                    "settings.yaml で cache.enabled を有効にしてください。"
+                )
+            cached = self._cache.load_videos()
+            if not cached:
+                raise RuntimeError(
+                    "キャッシュが空のため offline モードで実行できません。"
+                    "クォータに余裕があるときに --refresh 付きで実行してください。"
+                )
+            return cached
+
+        if self._cache is not None and not refresh and self._cache.is_fresh("videos"):
+            cached = self._cache.load_videos()
+            if cached:
+                logger.info(f"Loaded {len(cached)} videos from cache.")
+                return cached
+
         try:
             service = build("youtube", "v3", credentials=self.credentials, cache_discovery=False)
             
@@ -169,8 +199,9 @@ class VideoManager:
             
             # 2. Iterate through the uploads playlist
             videos = []
+            seen_video_ids = set()
             next_page_token = None
-            
+
             logger.info("Fetching all uploaded videos...")
             while True:
                 pl_request = service.playlistItems().list(
@@ -180,13 +211,22 @@ class VideoManager:
                     pageToken=next_page_token
                 )
                 pl_response = pl_request.execute()
-                
+
                 for item in pl_response.get("items", []):
+                    video_id = item["contentDetails"]["videoId"]
+                    # 件数が多い環境ではページング中 (数分かかる) に uploads
+                    # プレイリストの内容が変化し、同じ動画が複数のページに
+                    # 現れることがある (YouTube API の既知の挙動)。重複した
+                    # まま返すと SnapshotCache.save_videos が UNIQUE 制約
+                    # 違反でクラッシュするため、最初に見つかったものだけ残す。
+                    if video_id in seen_video_ids:
+                        continue
+                    seen_video_ids.add(video_id)
                     videos.append({
-                        "id": item["contentDetails"]["videoId"],
+                        "id": video_id,
                         "title": item["snippet"]["title"]
                     })
-                
+
                 next_page_token = pl_response.get("nextPageToken")
                 if not next_page_token:
                     break
@@ -207,9 +247,16 @@ class VideoManager:
                 for v in videos:
                     v["privacy"] = privacy_map.get(v["id"], "unknown")
             
+            if self._cache is not None:
+                self._cache.save_videos(videos)
+                self._cache.mark_complete("videos")
+
             logger.info(f"Found {len(videos)} uploaded videos.")
             return videos
-            
+
         except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while fetching videos: {e}")
+                raise QuotaExceededError(str(e)) from e
             logger.error(f"Failed to fetch uploaded videos: {e}")
             return []

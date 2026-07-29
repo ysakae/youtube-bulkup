@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
+
 from src.lib.video.playlist import PlaylistManager
+
 
 class TestPlaylistManager(unittest.TestCase):
     def setUp(self):
@@ -158,8 +160,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_ensure_cache_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -174,8 +176,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_get_or_create_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -190,8 +192,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_add_video_to_playlist_already_in(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -204,8 +206,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_add_video_to_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -218,8 +220,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_remove_video_from_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -261,8 +263,8 @@ class TestPlaylistManager(unittest.TestCase):
     @patch.object(PlaylistManager, "get_or_create_playlist")
     @patch("src.lib.video.playlist.build")
     def test_get_video_ids_from_playlist_http_error(self, mock_build, mock_get_playlist):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_get_playlist.return_value = "PL123"
         
@@ -309,8 +311,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_rename_playlist_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         self.manager._playlist_cache = {"Title": "PL123"}
         self.manager._initialized = True
@@ -354,8 +356,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_list_playlists_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_service = MagicMock()
         mock_build.return_value = mock_service
@@ -399,8 +401,8 @@ class TestPlaylistManager(unittest.TestCase):
     @patch.object(PlaylistManager, "find_playlist_id")
     @patch("src.lib.video.playlist.build")
     def test_list_playlist_items_http_error(self, mock_build, mock_find_id):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         mock_find_id.return_value = "PL123"
         
@@ -445,8 +447,8 @@ class TestPlaylistManager(unittest.TestCase):
 
     @patch("src.lib.video.playlist.build")
     def test_get_all_playlists_map_http_error(self, mock_build):
-        from googleapiclient.errors import HttpError
         import httplib2
+        from googleapiclient.errors import HttpError
         
         self.manager._playlist_cache = {"List1": "PL1"}
         self.manager._initialized = True
@@ -459,6 +461,651 @@ class TestPlaylistManager(unittest.TestCase):
         
         playlist_map = self.manager.get_all_playlists_map()
         self.assertEqual(playlist_map, {})
+
+
+class TestPlaylistPagination(unittest.TestCase):
+    def setUp(self):
+        self.mock_creds = MagicMock()
+        self.manager = PlaylistManager(self.mock_creds)
+
+    @staticmethod
+    def _page(items, next_token=None):
+        page = {"items": items}
+        if next_token:
+            page["nextPageToken"] = next_token
+        return page
+
+    @staticmethod
+    def _item(pid, title, published="2020-01-01T00:00:00Z", count=0):
+        return {
+            "id": pid,
+            "snippet": {"title": title, "publishedAt": published},
+            "contentDetails": {"itemCount": count},
+            "status": {"privacyStatus": "private"},
+        }
+
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_follows_pagination(self, mock_build):
+        """50件を超えるプレイリストを全件取得する (544個ある環境の回帰テスト)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        page1 = self._page([self._item(f"PL{i}", f"T{i}") for i in range(50)], "TOKEN")
+        page2 = self._page([self._item(f"PL{i}", f"T{i}") for i in range(50, 60)])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(len(self.manager._playlists), 60)
+        self.assertEqual(len(self.manager._playlist_cache), 60)
+        self.assertIn("T59", self.manager._playlist_cache)
+
+    @patch("src.lib.video.playlist.build")
+    def test_pagination_passes_page_token(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        page1 = self._page([self._item("PL1", "T1")], "TOKEN")
+        page2 = self._page([self._item("PL2", "T2")])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        calls = mock_service.playlists().list.call_args_list
+        tokens = [c.kwargs.get("pageToken") for c in calls if "pageToken" in c.kwargs]
+        self.assertIn("TOKEN", tokens)
+
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_dedupes_same_id_across_page_boundary(self, mock_build):
+        """ページ境界で同じプレイリストIDが重複して返ってきても除去する。
+
+        件数が多い環境ではページング中にプレイリストの内容/順序が変わり、
+        同じプレイリストが複数ページに現れることがある (get_all_uploaded_videos
+        と同種の YouTube API の既知の挙動)。重複したまま _playlists に積むと
+        SnapshotCache.save_playlists の playlist_id UNIQUE 制約に違反して
+        クラッシュする。同名の別プレイリストは正当に複数存在しうるため、
+        除去すべきは同じ id が2回出てくる場合だけであることに注意。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        page1 = self._page([self._item("PL1", "T1"), self._item("PL2", "T2")], "TOKEN")
+        page2 = self._page([self._item("PL2", "T2"), self._item("PL3", "T3")])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        ids = [p.id for p in self.manager._playlists]
+        self.assertEqual(ids, ["PL1", "PL2", "PL3"], "最初に見つかった順序を保つこと")
+        self.assertEqual(len(ids), len(set(ids)), "重複が残っている")
+
+    @patch("src.lib.video.playlist.build")
+    def test_duplicate_titles_resolve_to_oldest(self, mock_build):
+        """同名が複数あるとき、最も古いものを「正」とする。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_MID", "運動会", "2022-01-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(self.manager._playlist_cache["運動会"], "PL_OLD")
+        self.assertEqual(len(self.manager._playlists), 3)
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_duplicate_playlists(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_SOLO", "発表会", "2021-01-01T00:00:00Z"),
+            ])
+        ]
+
+        dups = self.manager.get_duplicate_playlists()
+
+        self.assertEqual(list(dups.keys()), ["運動会"])
+        self.assertEqual([p.id for p in dups["運動会"]], ["PL_OLD", "PL_NEW"])
+        self.assertNotIn("発表会", dups)
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_duplicate_playlists_none(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([self._item("PL1", "A"), self._item("PL2", "B")])
+        ]
+        self.assertEqual(self.manager.get_duplicate_playlists(), {})
+
+    @patch("src.lib.video.playlist.build")
+    def test_all_playlist_ids_includes_duplicates(self, mock_build):
+        """重複プレイリストの中身も走査対象に含める。
+        漏らすと重複側にだけ入っている動画がオーファン誤判定される。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL_NEW", "PL_OLD"])
+
+    def test_all_playlist_ids_falls_back_to_cache(self):
+        """_playlists が空のとき (テストが _playlist_cache に直接代入した場合) は
+        _playlist_cache の値を使う。"""
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_all_playlists_map_covers_all_playlists(self, mock_build):
+        """544個の環境で50個しか走査していなかった問題の回帰テスト。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        pl_items = [self._item(f"PL{i}", f"T{i}") for i in range(50)]
+        pl_items2 = [self._item(f"PL{i}", f"T{i}") for i in range(50, 60)]
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page(pl_items, "TOKEN"),
+            self._page(pl_items2),
+        ]
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        result = self.manager.get_all_playlists_map()
+
+        self.assertEqual(len(result), 60)
+        self.assertIn("PL59", result)
+
+    @patch("src.lib.video.playlist.build")
+    def test_newly_created_playlist_is_included_in_scan(self, mock_build):
+        """新規作成したプレイリストが走査対象に入る。
+
+        漏らすと、作成直後に走査したときにそのプレイリストの中身が
+        見えず、中の動画がオーファンと誤判定される。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([self._item("PL_EXISTING", "既存")])
+        ]
+        mock_service.playlists().insert.return_value.execute.return_value = {
+            "id": "PL_NEW",
+            "snippet": {"title": "新規", "publishedAt": "2026-07-28T00:00:00Z"},
+        }
+
+        self.manager._ensure_cache()
+        created = self.manager.get_or_create_playlist("新規")
+
+        self.assertEqual(created, "PL_NEW")
+        self.assertIn("PL_NEW", self.manager._all_playlist_ids())
+        self.assertIn("PL_EXISTING", self.manager._all_playlist_ids())
+
+    def test_all_playlist_ids_merges_both_sources(self):
+        """_playlists と _playlist_cache の両方から漏れなく集める。"""
+        from src.lib.video.playlist import PlaylistInfo
+
+        self.manager._playlists = [
+            PlaylistInfo(id="PL1", title="A", item_count=0, privacy="private",
+                         published_at="2020-01-01T00:00:00Z")
+        ]
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+
+        self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
+
+    @patch("src.lib.video.playlist.build")
+    def test_deleted_playlist_disappears_from_all_playlist_ids(self, mock_build):
+        """delete_playlist した ID は _all_playlist_ids() から消えること。
+
+        _all_playlist_ids() は _playlists と _playlist_cache の両方を
+        マージして返すため、片方からしか除去しないと削除済みIDが
+        走査対象に残り続けてしまう (Task 6 レビュー指摘)。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_SOLO", "発表会", "2021-01-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+        self.assertIn("PL_NEW", self.manager._all_playlist_ids())
+
+        self.manager.delete_playlist("PL_NEW")
+
+        remaining = self.manager._all_playlist_ids()
+        self.assertNotIn("PL_NEW", remaining)
+        self.assertIn("PL_OLD", remaining)
+        self.assertIn("PL_SOLO", remaining)
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_does_not_wipe_cache_when_playlists_list_is_empty(
+        self, mock_build
+    ):
+        """_playlists が空 (_playlist_cache に直接代入されたテスト/呼び出し方) の
+        ときに削除しても、無関係な他のエントリを巻き込んで消してはいけない。
+
+        _build_title_index([]) で _playlist_cache を丸ごと作り直すと、
+        削除対象以外のプレイリストまで _all_playlist_ids() から消えてしまう。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+
+        self.manager.delete_playlist("PL1")
+
+        remaining = self.manager._all_playlist_ids()
+        self.assertNotIn("PL1", remaining)
+        self.assertIn(
+            "PL2", remaining, "削除と無関係な PL2 まで消えてしまっている"
+        )
+
+
+class TestPlaylistQuotaHandling(unittest.TestCase):
+    def setUp(self):
+        self.mock_creds = MagicMock()
+        self.manager = PlaylistManager(self.mock_creds)
+        self.manager._playlist_cache = {"Existing": "PL1"}
+        self.manager._initialized = True
+
+    @staticmethod
+    def _quota_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    @staticmethod
+    def _other_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 404})
+        resp.status = 404
+        return HttpError(resp, b"Not Found")
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().insert.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.add_video_to_playlist("PL1", "v1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_add_video_returns_false_on_other_error(self, mock_build):
+        """quota 以外のエラーは従来どおり False を返す (1件の失敗として扱う)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().insert.return_value.execute.side_effect = (
+            self._other_error()
+        )
+
+        self.assertFalse(self.manager.add_video_to_playlist("PL1", "v1"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_or_create_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().insert.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.get_or_create_playlist("Brand New")
+
+    @patch("src.lib.video.playlist.build")
+    def test_get_or_create_returns_none_on_other_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().insert.return_value.execute.side_effect = (
+            self._other_error()
+        )
+
+        self.assertIsNone(self.manager.get_or_create_playlist("Brand New"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_remove_video_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"id": "ITEM1"}]
+        }
+        mock_service.playlistItems().delete.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            self.manager.remove_video_from_playlist("PL1", "v1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        manager = PlaylistManager(self.mock_creds)
+        mock_service.playlists().list.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+
+        with self.assertRaises(QuotaExceededError):
+            manager._ensure_cache()
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_success(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        self.assertTrue(self.manager.delete_playlist("PL1"))
+        mock_service.playlists().delete.assert_called_with(id="PL1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().delete.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+        with self.assertRaises(QuotaExceededError):
+            self.manager.delete_playlist("PL1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_returns_false_on_other_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().delete.return_value.execute.side_effect = (
+            self._other_error()
+        )
+        self.assertFalse(self.manager.delete_playlist("PL1"))
+
+
+class TestPlaylistCacheIntegration(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+
+        from src.lib.data.snapshot import SnapshotCache
+
+        self.mock_creds = MagicMock()
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self.cache = SnapshotCache(db_path=self.tmp.name, ttl_hours=24)
+
+    def tearDown(self):
+        import os
+
+        self.cache.close()
+        for suffix in ["", "-wal", "-shm"]:
+            path = self.tmp.name + suffix
+            if os.path.exists(path):
+                os.remove(path)
+
+    @staticmethod
+    def _pl_item(pid, title):
+        return {
+            "id": pid,
+            "snippet": {"title": title, "publishedAt": "2020-01-01T00:00:00Z"},
+            "contentDetails": {"itemCount": 1},
+            "status": {"privacyStatus": "private"},
+        }
+
+    @patch("src.lib.video.playlist.build")
+    def test_map_is_saved_to_cache(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map()
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+        self.assertEqual(self.cache.load_playlist_map(), {"PL1": {"v1"}})
+        self.assertTrue(self.cache.is_fresh("playlist_items"))
+
+    @patch("src.lib.video.playlist.build")
+    def test_second_call_uses_cache_without_api(self, mock_build):
+        self.cache.save_playlist_items("PLX", {"vA", "vB"})
+        self.cache.mark_complete("playlist_items")
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map()
+
+        self.assertEqual(result, {"PLX": {"vA", "vB"}})
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_refresh_bypasses_cache(self, mock_build):
+        self.cache.save_playlist_items("PLX", {"vA"})
+        self.cache.mark_complete("playlist_items")
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(refresh=True)
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+
+    @patch("src.lib.video.playlist.build")
+    def test_offline_uses_stale_cache_without_api(self, mock_build):
+        """TTL 切れでも offline ならキャッシュを使う (quota 枯渇中の調査用)。"""
+        self.cache.save_playlist_items("PLX", {"vA"})
+        self.cache.mark_complete("playlist_items")
+        self.cache.ttl_seconds = 0
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(offline=True)
+
+        self.assertEqual(result, {"PLX": {"vA"}})
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_offline_without_cache_raises(self, mock_build):
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with self.assertRaises(RuntimeError):
+            manager.get_all_playlists_map(offline=True)
+        mock_build.assert_not_called()
+
+    @patch("src.lib.video.playlist.build")
+    def test_no_cache_still_works(self, mock_build):
+        """cache=None でも従来どおり動作する (後方互換)。"""
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds)
+        self.assertEqual(manager.get_all_playlists_map(), {"PL1": {"v1"}})
+
+    @staticmethod
+    def _quota_error():
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 403})
+        resp.status = 403
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    @patch("src.lib.video.playlist.build")
+    def test_quota_error_during_scan_does_not_mark_complete(self, mock_build):
+        """走査の途中でクォータが尽きたら、キャッシュを「完了」と記録しない。
+
+        部分的にしか取得できていないキャッシュを新鮮とみなすと、
+        次回の判定で大量の動画がオーファンと誤判定される。
+        """
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A"), self._pl_item("PL2", "B")]
+        }
+        # 1件目 (PL1) は成功、2件目 (PL2) で quota 枯渇
+        mock_service.playlistItems().list.return_value.execute.side_effect = [
+            {"items": [{"contentDetails": {"videoId": "v1"}}]},
+            self._quota_error(),
+        ]
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+
+        with self.assertRaises(QuotaExceededError):
+            manager.get_all_playlists_map()
+
+    @patch("src.lib.video.playlist.build")
+    def test_full_scan_prunes_vanished_playlists(self, mock_build):
+        """走査対象に含まれなくなったプレイリストの行はキャッシュから消す。
+
+        残したままだと load_playlist_map() が「存在しないプレイリストの
+        中身」を返し、そこにしか入っていなかった動画がオーファンとして
+        検出されなくなる (Important 4)。
+        """
+        # 前回の走査で存在していたが、YouTube 側で消えたプレイリスト
+        self.cache.save_playlist_items("PL_GONE", {"v_only_here"})
+        self.cache.save_playlist_items("PL_GONE_EMPTY", set())
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(refresh=True)
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+        self.assertEqual(
+            self.cache.load_playlist_map(), {"PL1": {"v1"}},
+            "消滅したプレイリストの行がキャッシュに残っている",
+        )
+
+    @patch("src.lib.video.playlist.build")
+    def test_prune_is_not_called_when_scan_is_interrupted(self, mock_build):
+        """走査が完走しなかった場合は prune しない (未走査分を消さない)。"""
+        from src.lib.core.quota import QuotaExceededError
+
+        self.cache.save_playlist_items("PL_OLD", {"v_old"})
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A"), self._pl_item("PL2", "B")]
+        }
+        mock_service.playlistItems().list.return_value.execute.side_effect = [
+            {"items": [{"contentDetails": {"videoId": "v1"}}]},
+            self._quota_error(),
+        ]
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with self.assertRaises(QuotaExceededError):
+            manager.get_all_playlists_map(refresh=True)
+
+        self.assertIn("PL_OLD", self.cache.load_playlist_map())
+
+        self.assertFalse(
+            self.cache.is_fresh("playlist_items"),
+            "走査が完走していないのに完了と記録されている",
+        )
+
+    @staticmethod
+    def _backend_error():
+        """非クォータの一時的なサーバエラー (503 backendError) を模す。"""
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 503})
+        resp.status = 503
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "backendError"}]}}')
+
+    @patch("src.lib.video.playlist.build")
+    def test_prune_is_not_called_when_playlist_list_fails_non_quota(self, mock_build):
+        """プレイリスト一覧の取得が非クォータエラーで失敗した場合、
+        prune によってキャッシュを丸ごと失ってはいけない (回帰1)。
+
+        _ensure_cache は非クォータの HttpError を握りつぶして戻る
+        (_initialized も立たない) ため、走査対象が空になる。ここで
+        無条件に prune すると、一過性のサーバエラー1回でキャッシュの
+        全内容が消えてしまう。
+        """
+        self.cache.save_playlist_items("PL_A", {"v1", "v2"})
+        self.cache.save_playlist_items("PL_B", set())
+        self.cache.mark_complete("playlist_items")
+        before = self.cache.load_playlist_map()
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = (
+            self._backend_error()
+        )
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with patch.object(
+            self.cache, "prune_playlist_items", wraps=self.cache.prune_playlist_items
+        ) as spy_prune, patch.object(
+            self.cache, "mark_complete", wraps=self.cache.mark_complete
+        ) as spy_mark_complete:
+            manager.get_all_playlists_map(refresh=True)
+
+            spy_prune.assert_not_called()
+            spy_mark_complete.assert_not_called()
+
+        self.assertEqual(
+            self.cache.load_playlist_map(), before,
+            "一覧取得に失敗しただけで既存のキャッシュが消えてはいけない",
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

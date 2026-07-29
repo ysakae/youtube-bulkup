@@ -8,6 +8,9 @@ upload_history.json
 upload_history.db
 upload_history.db-wal
 upload_history.db-shm
+youtube_cache.db
+youtube_cache.db-wal
+youtube_cache.db-shm
 # Logs and temporary files
 *.log
 test_output.txt

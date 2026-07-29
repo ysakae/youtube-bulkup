@@ -1,9 +1,11 @@
-import pytest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from datetime import datetime
+
+import pytest
 
 from src.lib.video.metadata import FileMetadataGenerator
+
 
 class TestFileMetadataGenerator:
     @pytest.fixture
