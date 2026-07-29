@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from typing import Dict, List, Set, Tuple
 
 import typer
 from rich.console import Console
@@ -11,7 +12,7 @@ from ..lib.core.logger import setup_logging
 from ..lib.core.quota import COSTS, QuotaExceededError, QuotaLedger
 from ..lib.data.history import HistoryManager
 from ..lib.data.snapshot import SnapshotCache
-from ..lib.video.playlist import PlaylistManager
+from ..lib.video.playlist import PlaylistInfo, PlaylistManager
 
 app = typer.Typer(help="Manage playlists.")
 console = Console()
@@ -157,7 +158,9 @@ def _make_cache():
     return SnapshotCache(db_path=config.cache.path, ttl_hours=config.cache.ttl_hours)
 
 
-def _default_max_items(history: HistoryManager) -> int:
+def _default_max_items(
+    history: HistoryManager, unit_cost: int = COSTS["insert"]
+) -> int:
     """本日の残り予算から処理可能な件数を見積もる。
 
     本日のアップロード件数 x 1600 を使用済みとみなす。実際の残量は
@@ -165,6 +168,9 @@ def _default_max_items(history: HistoryManager) -> int:
 
     「本日」の境界は既存の check_quota_limit (upload_manager.py:44-45) と
     揃えてローカル時間の午前0時とする。
+
+    unit_cost: 1件あたりの消費ユニット。orphans は insert のみ (50) だが、
+    dedupe は insert + delete (100) なので呼び出し側で変える。
     """
     now = datetime.now()
     today_start = datetime(now.year, now.month, now.day).timestamp()
@@ -175,7 +181,7 @@ def _default_max_items(history: HistoryManager) -> int:
     ]
     used = len(today_uploads) * COSTS["upload"]
     budget = max(0, config.effective_daily_quota() - config.quota.reserve - used)
-    return budget // COSTS["insert"]
+    return budget // unit_cost
 
 
 def _resolve_target_playlist(record) -> str:
@@ -405,21 +411,39 @@ def list_orphans(
 
 
 def _merge_duplicate_group(
-    canonical, duplicates, pl_manager, playlist_map, ledger, max_items
-):
+    canonical: PlaylistInfo,
+    duplicates: List[PlaylistInfo],
+    pl_manager: PlaylistManager,
+    playlist_map: Dict[str, Set[str]],
+    ledger: QuotaLedger,
+    max_items: int,
+) -> Tuple[int, int, bool]:
     """1つの重複グループを統合する。
 
     canonical に動画を集約し、空になった重複プレイリストを削除する。
 
-    Returns: (moved, deleted) — 移動した動画数と削除したプレイリスト数。
+    Returns: (moved, deleted, interrupted) — 移動した動画数、削除した
+    プレイリスト数、クォータ枯渇 (実際の API 403) で中断したかどうか。
     途中で中断した場合、中身が残るプレイリストは削除しない。
+
+    安全のため、以下の場合も削除しない:
+    - playlist_map に重複プレイリストのIDが無い (中身を把握していない。
+      スナップショットが古い/未取得のときに「空」と誤認するのを防ぐ)
+    - 把握している動画数が実際の item_count より少ない (未把握の動画が
+      残っている可能性がある)
     """
     canonical_videos = set(playlist_map.get(canonical.id, set()))
     moved = 0
     deleted = 0
 
     for dup in duplicates:
-        dup_videos = playlist_map.get(dup.id, set())
+        if dup.id not in playlist_map:
+            console.print(
+                f"[yellow]中身が不明のため削除をスキップ: {dup.title} ({dup.id})[/]"
+            )
+            continue
+
+        dup_videos = playlist_map[dup.id]
         fully_moved = True
 
         for video_id in sorted(dup_videos):
@@ -454,18 +478,26 @@ def _merge_duplicate_group(
 
             except QuotaExceededError:
                 console.print("\n[bold red]クォータを使い切りました。中断します。[/]")
-                return moved, deleted
+                return moved, deleted, True
+
+        if fully_moved and len(dup_videos) < dup.item_count:
+            console.print(
+                f"[yellow]件数が一致しないため削除をスキップ: {dup.title} ({dup.id}) "
+                f"— 把握 {len(dup_videos)} 件 / 実際 {dup.item_count} 件[/]"
+            )
+            continue
 
         if fully_moved:
             try:
                 if pl_manager.delete_playlist(dup.id):
                     deleted += 1
+                    ledger.charge("delete")
                     console.print(f"[green]重複プレイリストを削除: {dup.id}[/]")
             except QuotaExceededError:
                 console.print("\n[bold red]クォータを使い切りました。中断します。[/]")
-                return moved, deleted
+                return moved, deleted, True
 
-    return moved, deleted
+    return moved, deleted, False
 
 
 @app.command("dedupe")
@@ -485,6 +517,7 @@ def dedupe_playlists(
     setup_logging(level="INFO")
 
     cache = _make_cache()
+    history = None
 
     try:
         credentials = get_credentials()
@@ -518,8 +551,28 @@ def dedupe_playlists(
             console.print("\n[dim]--fix を付けると統合します。[/]")
             return
 
+        # --fix は破壊的操作 (プレイリスト削除) なので、本日の実残量から
+        # 予算を決める (orphans と同様。--max-items で予算そのものを
+        # 拡張する抜け道を防ぐ)。dedupe は1本あたり insert + delete = 100
+        # units 消費するため _default_max_items に unit_cost を渡す。
+        history = HistoryManager()
+        budget_items = _default_max_items(
+            history, unit_cost=COSTS["insert"] + COSTS["delete"]
+        )
+        limit = min(max_items, budget_items)
+        if limit <= 0:
+            console.print(
+                "[bold red]本日の推定残量では1件も処理できません。"
+                "クォータのリセット後に再実行してください。[/]"
+            )
+            return
+
         try:
-            playlist_map = pl_manager.get_all_playlists_map(refresh=refresh)
+            # --fix は 24 時間キャッシュされたスナップショットに基づいて
+            # 削除してはいけない (中身の入ったプレイリストを誤って空と
+            # 判定して削除してしまう)。必ず最新を取得する。--refresh は
+            # 検出のみのときの明示的な更新手段として残す。
+            playlist_map = pl_manager.get_all_playlists_map(refresh=True)
         except QuotaExceededError:
             console.print("[bold red]クォータを使い切っているため統合できません。[/]")
             raise typer.Exit(code=1)
@@ -529,7 +582,7 @@ def dedupe_playlists(
             for items in duplicates.values()
             for p in items[1:]
         )
-        target_count = min(movable, max_items)
+        target_count = min(movable, limit)
         estimated = (
             target_count * (COSTS["insert"] + COSTS["delete"])
             + total_dups * COSTS["delete"]
@@ -547,27 +600,41 @@ def dedupe_playlists(
         ledger = QuotaLedger(estimated)
         total_moved = 0
         total_deleted = 0
+        interrupted = False
+        processed_groups = 0
 
         for title, items in duplicates.items():
-            if total_moved >= max_items:
+            if total_moved >= limit:
                 break
             console.print(f"\n[bold]統合中: {title}[/]")
-            moved, deleted = _merge_duplicate_group(
+            moved, deleted, group_interrupted = _merge_duplicate_group(
                 items[0], items[1:], pl_manager, playlist_map,
-                ledger, max_items - total_moved,
+                ledger, limit - total_moved,
             )
             total_moved += moved
             total_deleted += deleted
+            processed_groups += 1
+            if group_interrupted:
+                interrupted = True
+                break
 
         console.print(
             f"\n[bold green]完了: {total_moved} 本を移動、"
             f"{total_deleted} 個のプレイリストを削除しました[/] "
             f"(消費 約 {ledger.spent:,} units)"
         )
+        if interrupted:
+            remaining_groups = len(duplicates) - processed_groups
+            console.print(
+                f"[bold yellow]残り {remaining_groups} グループ[/] — "
+                "同じコマンドを再実行すると残りから再開します。"
+            )
         if cache is not None:
             cache.clear()
             console.print("[dim]キャッシュを破棄しました (次回は最新を取得します)。[/]")
 
     finally:
+        if history is not None:
+            history.close()
         if cache is not None:
             cache.close()
