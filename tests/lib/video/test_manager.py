@@ -250,6 +250,60 @@ class TestVideoManager(unittest.TestCase):
         self.assertEqual(videos[1]["privacy"], "private")
 
     @patch("src.lib.video.manager.build")
+    def test_get_all_uploaded_videos_dedupes_page_boundary_overlap(self, mock_build):
+        """ページ境界で同じ videoId が重複して返ってきても除去する。
+
+        10,026件規模の実環境で、ページング中 (数分かかる) に uploads
+        プレイリストの内容が変化すると、同じ動画が複数のページに
+        現れることがある (YouTube API の既知の挙動)。重複したまま
+        SnapshotCache.save_videos に渡すと videos.video_id の
+        UNIQUE 制約違反でクラッシュする (実際に発生したバグ)。
+        順序は最初に見つかったものを採用して保つこと。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        mock_service.channels().list().execute.return_value = {
+            "items": [{
+                "contentDetails": {"relatedPlaylists": {"uploads": "PL_UPLOADS"}}
+            }]
+        }
+
+        mock_execute = MagicMock()
+        mock_service.playlistItems().list().execute = mock_execute
+        mock_execute.side_effect = [
+            {
+                "items": [
+                    {"contentDetails": {"videoId": "VID1"}, "snippet": {"title": "Title 1"}},
+                    {"contentDetails": {"videoId": "VID2"}, "snippet": {"title": "Title 2"}},
+                ],
+                "nextPageToken": "token",
+            },
+            {
+                # ページ境界で VID2 が再度出現する (プレイリスト内容の変化による重複)
+                "items": [
+                    {"contentDetails": {"videoId": "VID2"}, "snippet": {"title": "Title 2"}},
+                    {"contentDetails": {"videoId": "VID3"}, "snippet": {"title": "Title 3"}},
+                ],
+                "nextPageToken": None,
+            },
+        ]
+
+        mock_service.videos().list().execute.return_value = {
+            "items": [
+                {"id": "VID1", "status": {"privacyStatus": "public"}},
+                {"id": "VID2", "status": {"privacyStatus": "public"}},
+                {"id": "VID3", "status": {"privacyStatus": "public"}},
+            ]
+        }
+
+        videos = self.manager.get_all_uploaded_videos()
+
+        ids = [v["id"] for v in videos]
+        self.assertEqual(ids, ["VID1", "VID2", "VID3"], "最初に見つかった順序を保つこと")
+        self.assertEqual(len(ids), len(set(ids)), "重複が残っている")
+
+    @patch("src.lib.video.manager.build")
     def test_get_all_uploaded_videos_no_channel(self, mock_build):
         mock_service = MagicMock()
         mock_build.return_value = mock_service

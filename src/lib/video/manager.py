@@ -199,8 +199,9 @@ class VideoManager:
             
             # 2. Iterate through the uploads playlist
             videos = []
+            seen_video_ids = set()
             next_page_token = None
-            
+
             logger.info("Fetching all uploaded videos...")
             while True:
                 pl_request = service.playlistItems().list(
@@ -210,13 +211,22 @@ class VideoManager:
                     pageToken=next_page_token
                 )
                 pl_response = pl_request.execute()
-                
+
                 for item in pl_response.get("items", []):
+                    video_id = item["contentDetails"]["videoId"]
+                    # 件数が多い環境ではページング中 (数分かかる) に uploads
+                    # プレイリストの内容が変化し、同じ動画が複数のページに
+                    # 現れることがある (YouTube API の既知の挙動)。重複した
+                    # まま返すと SnapshotCache.save_videos が UNIQUE 制約
+                    # 違反でクラッシュするため、最初に見つかったものだけ残す。
+                    if video_id in seen_video_ids:
+                        continue
+                    seen_video_ids.add(video_id)
                     videos.append({
-                        "id": item["contentDetails"]["videoId"],
+                        "id": video_id,
                         "title": item["snippet"]["title"]
                     })
-                
+
                 next_page_token = pl_response.get("nextPageToken")
                 if not next_page_token:
                     break

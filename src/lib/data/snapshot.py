@@ -103,11 +103,17 @@ class SnapshotCache:
     # --- playlists ---
 
     def save_playlists(self, playlists: List[Dict[str, Any]]) -> None:
-        """プレイリスト一覧を全置換で保存する。"""
+        """プレイリスト一覧を全置換で保存する。
+
+        呼び出し元 (PlaylistManager._ensure_cache) がページ境界の重複を
+        除去していても、キャッシュ層が入力データの品質に依存して落ちるのは
+        脆いため、同じ playlist_id が複数来ても例外にならないよう
+        INSERT OR REPLACE で冪等にしておく (防御)。
+        """
         now = time.time()
         self.conn.execute("DELETE FROM playlists")
         self.conn.executemany(
-            "INSERT INTO playlists "
+            "INSERT OR REPLACE INTO playlists "
             "(playlist_id, title, item_count, privacy, published_at, fetched_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             [
@@ -240,10 +246,17 @@ class SnapshotCache:
     # --- videos ---
 
     def save_videos(self, videos: List[Dict[str, Any]]) -> None:
+        """動画一覧を全置換で保存する。
+
+        get_all_uploaded_videos 側で重複除去していても、キャッシュ層が
+        入力データの品質に依存して落ちるのは脆いため、同じ video_id が
+        複数来ても例外にならないよう INSERT OR REPLACE で冪等にしておく
+        (防御。実際に UNIQUE 制約違反でクラッシュしたことがある)。
+        """
         now = time.time()
         self.conn.execute("DELETE FROM videos")
         self.conn.executemany(
-            "INSERT INTO videos (video_id, title, privacy, fetched_at) "
+            "INSERT OR REPLACE INTO videos (video_id, title, privacy, fetched_at) "
             "VALUES (?, ?, ?, ?)",
             [(v["id"], v.get("title", ""), v.get("privacy"), now) for v in videos],
         )

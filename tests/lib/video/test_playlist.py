@@ -515,6 +515,29 @@ class TestPlaylistPagination(unittest.TestCase):
         self.assertIn("TOKEN", tokens)
 
     @patch("src.lib.video.playlist.build")
+    def test_ensure_cache_dedupes_same_id_across_page_boundary(self, mock_build):
+        """ページ境界で同じプレイリストIDが重複して返ってきても除去する。
+
+        件数が多い環境ではページング中にプレイリストの内容/順序が変わり、
+        同じプレイリストが複数ページに現れることがある (get_all_uploaded_videos
+        と同種の YouTube API の既知の挙動)。重複したまま _playlists に積むと
+        SnapshotCache.save_playlists の playlist_id UNIQUE 制約に違反して
+        クラッシュする。同名の別プレイリストは正当に複数存在しうるため、
+        除去すべきは同じ id が2回出てくる場合だけであることに注意。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        page1 = self._page([self._item("PL1", "T1"), self._item("PL2", "T2")], "TOKEN")
+        page2 = self._page([self._item("PL2", "T2"), self._item("PL3", "T3")])
+        mock_service.playlists().list.return_value.execute.side_effect = [page1, page2]
+
+        self.manager._ensure_cache()
+
+        ids = [p.id for p in self.manager._playlists]
+        self.assertEqual(ids, ["PL1", "PL2", "PL3"], "最初に見つかった順序を保つこと")
+        self.assertEqual(len(ids), len(set(ids)), "重複が残っている")
+
+    @patch("src.lib.video.playlist.build")
     def test_duplicate_titles_resolve_to_oldest(self, mock_build):
         """同名が複数あるとき、最も古いものを「正」とする。"""
         mock_service = MagicMock()

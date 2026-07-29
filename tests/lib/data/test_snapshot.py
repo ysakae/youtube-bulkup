@@ -63,6 +63,20 @@ class TestPlaylists:
         assert len(loaded) == 1
         assert loaded[0]["id"] == "PL1"
 
+    def test_save_with_duplicate_ids_does_not_raise(self, cache):
+        """重複した playlist_id を含むリストを渡しても UNIQUE 制約違反にならない。
+
+        呼び出し側 (PlaylistManager._ensure_cache) がページ境界の重複を
+        除去していても、キャッシュ層が入力データの品質に依存して落ちるのは
+        脆いため、こちら側でも冪等にしておく (防御)。
+        """
+        playlists_with_dup = PLAYLISTS + [PLAYLISTS[0]]
+        cache.save_playlists(playlists_with_dup)  # 例外にならないこと
+        loaded = cache.load_playlists()
+        assert len(loaded) == len(PLAYLISTS)
+        ids = [p["id"] for p in loaded]
+        assert len(ids) == len(set(ids))
+
 
 class TestPlaylistItems:
     def test_save_and_load_map(self, cache):
@@ -188,6 +202,21 @@ class TestVideos:
         cache.save_videos(VIDEOS)
         cache.save_videos([VIDEOS[0]])
         assert len(cache.load_videos()) == 1
+
+    def test_save_with_duplicate_ids_does_not_raise(self, cache):
+        """重複した video_id を含むリストを渡しても UNIQUE 制約違反にならない。
+
+        実環境 (10,026件) で get_all_uploaded_videos がページ境界の重複を
+        含んだまま返し、IntegrityError でクラッシュしたことがある。
+        呼び出し側で重複除去していても、キャッシュ層が入力データの品質に
+        依存して落ちるのは脆いため、こちら側でも冪等にしておく (防御)。
+        """
+        videos_with_dup = VIDEOS + [VIDEOS[0]]
+        cache.save_videos(videos_with_dup)  # 例外にならないこと
+        loaded = cache.load_videos()
+        assert len(loaded) == len(VIDEOS)
+        ids = [v["id"] for v in loaded]
+        assert len(ids) == len(set(ids))
 
 
 class TestFreshness:

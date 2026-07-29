@@ -53,6 +53,7 @@ class PlaylistManager:
             )
 
             playlists: List[PlaylistInfo] = []
+            seen_playlist_ids = set()
             next_page_token = None
 
             while True:
@@ -64,10 +65,22 @@ class PlaylistManager:
                 ).execute()
 
                 for item in response.get("items", []):
+                    playlist_id = item["id"]
+                    # get_all_uploaded_videos と同種の問題: 件数が多い環境では
+                    # ページング中にプレイリストの内容/順序が変わり、同じ
+                    # プレイリストが複数ページに現れることがある。重複した
+                    # まま積むと SnapshotCache.save_playlists が
+                    # playlist_id の UNIQUE 制約違反でクラッシュするため、
+                    # 同じ id が2回出た場合だけ除去する (同名の別プレイリスト
+                    # は正当に複数存在しうるので title では弾かない)。
+                    if playlist_id in seen_playlist_ids:
+                        continue
+                    seen_playlist_ids.add(playlist_id)
+
                     snippet = item.get("snippet", {})
                     playlists.append(
                         PlaylistInfo(
-                            id=item["id"],
+                            id=playlist_id,
                             title=snippet.get("title", ""),
                             item_count=item.get("contentDetails", {}).get(
                                 "itemCount", 0
