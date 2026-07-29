@@ -816,5 +816,283 @@ class TestOrphansQuotaControl:
         assert "残り 3 件" in result.output
 
 
+class TestDedupe:
+    """重複プレイリストの統合。"""
+
+    @staticmethod
+    def _info(pid, title, published):
+        from src.lib.video.playlist import PlaylistInfo
+
+        return PlaylistInfo(
+            id=pid, title=title, item_count=0, privacy="private", published_at=published
+        )
+
+    def test_merge_moves_videos_to_canonical(self):
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+
+        canonical = self._info("PL_OLD", "運動会", "2020-01-01T00:00:00Z")
+        dup = self._info("PL_NEW", "運動会", "2024-01-01T00:00:00Z")
+        playlist_map = {"PL_OLD": {"v1"}, "PL_NEW": {"v2", "v3"}}
+
+        pl_manager = MagicMock()
+        pl_manager.add_video_to_playlist.return_value = True
+        pl_manager.remove_video_from_playlist.return_value = True
+
+        moved, deleted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(100000), max_items=100
+        )
+
+        assert moved == 2
+        assert deleted == 1
+        assert pl_manager.add_video_to_playlist.call_count == 2
+        pl_manager.add_video_to_playlist.assert_any_call("PL_OLD", "v2")
+        pl_manager.add_video_to_playlist.assert_any_call("PL_OLD", "v3")
+        pl_manager.delete_playlist.assert_called_once_with("PL_NEW")
+
+    def test_merge_skips_insert_for_already_present_video(self):
+        """正にすでに入っている動画は insert を省き delete だけ行う (50 units 節約)。"""
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+
+        canonical = self._info("PL_OLD", "運動会", "2020-01-01T00:00:00Z")
+        dup = self._info("PL_NEW", "運動会", "2024-01-01T00:00:00Z")
+        playlist_map = {"PL_OLD": {"v1", "v2"}, "PL_NEW": {"v2"}}
+
+        pl_manager = MagicMock()
+        pl_manager.remove_video_from_playlist.return_value = True
+
+        moved, deleted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(100000), max_items=100
+        )
+
+        pl_manager.add_video_to_playlist.assert_not_called()
+        pl_manager.remove_video_from_playlist.assert_called_once_with("PL_NEW", "v2")
+        assert moved == 1
+        assert deleted == 1
+
+    def test_merge_stops_on_quota_error(self):
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaExceededError, QuotaLedger
+
+        canonical = self._info("PL_OLD", "運動会", "2020-01-01T00:00:00Z")
+        dup = self._info("PL_NEW", "運動会", "2024-01-01T00:00:00Z")
+        playlist_map = {"PL_OLD": set(), "PL_NEW": {"v1", "v2", "v3"}}
+
+        pl_manager = MagicMock()
+        pl_manager.add_video_to_playlist.side_effect = [
+            True, QuotaExceededError("out"), True
+        ]
+        pl_manager.remove_video_from_playlist.return_value = True
+
+        moved, deleted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(100000), max_items=100
+        )
+
+        assert moved == 1
+        assert deleted == 0, "全部移せていないので削除しない"
+        pl_manager.delete_playlist.assert_not_called()
+
+    def test_merge_does_not_delete_when_max_items_reached(self):
+        """上限で打ち切った場合、中身が残るプレイリストは削除しない。"""
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+
+        canonical = self._info("PL_OLD", "運動会", "2020-01-01T00:00:00Z")
+        dup = self._info("PL_NEW", "運動会", "2024-01-01T00:00:00Z")
+        playlist_map = {"PL_OLD": set(), "PL_NEW": {"v1", "v2", "v3"}}
+
+        pl_manager = MagicMock()
+        pl_manager.add_video_to_playlist.return_value = True
+        pl_manager.remove_video_from_playlist.return_value = True
+
+        moved, deleted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(100000), max_items=2
+        )
+
+        assert moved == 2
+        assert deleted == 0
+        pl_manager.delete_playlist.assert_not_called()
+
+    def test_merge_empty_duplicate_is_deleted_directly(self):
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+
+        canonical = self._info("PL_OLD", "運動会", "2020-01-01T00:00:00Z")
+        dup = self._info("PL_NEW", "運動会", "2024-01-01T00:00:00Z")
+        playlist_map = {"PL_OLD": {"v1"}, "PL_NEW": set()}
+
+        pl_manager = MagicMock()
+
+        moved, deleted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(100000), max_items=100
+        )
+
+        assert moved == 0
+        assert deleted == 1
+        pl_manager.add_video_to_playlist.assert_not_called()
+        pl_manager.delete_playlist.assert_called_once_with("PL_NEW")
+
+
+class TestDedupeCommand(unittest.TestCase):
+    """`yt-up playlist dedupe` CLI コマンドのテスト。"""
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    def test_dedupe_no_duplicates(
+        self, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        mock_get_credentials.return_value = MagicMock()
+        mock_pl = MockPlManager.return_value
+        mock_pl.get_duplicate_playlists.return_value = {}
+
+        result = runner.invoke(app, ["playlist", "dedupe"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("重複しているプレイリストはありません", result.output)
+        mock_pl.get_all_playlists_map.assert_not_called()
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    def test_dedupe_detect_only_does_not_fetch_map(
+        self, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        """--fix なしなら検出のみで、動画マップ取得 (課金対象) は行わない。"""
+        from src.lib.video.playlist import PlaylistInfo
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_pl = MockPlManager.return_value
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=1,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=2,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+
+        result = runner.invoke(app, ["playlist", "dedupe"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("運動会", result.output)
+        self.assertIn("--fix を付けると統合します", result.output)
+        mock_pl.get_all_playlists_map.assert_not_called()
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    def test_dedupe_quota_error_on_detect_exits_1(
+        self, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_pl = MockPlManager.return_value
+        mock_pl.get_duplicate_playlists.side_effect = QuotaExceededError("out")
+
+        result = runner.invoke(app, ["playlist", "dedupe"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("クォータを使い切っている", result.output)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    def test_dedupe_fix_merges_and_clears_cache(
+        self, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        from src.lib.video.playlist import PlaylistInfo
+
+        mock_get_credentials.return_value = MagicMock()
+        cache = MagicMock()
+        mock_make_cache.return_value = cache
+
+        mock_pl = MockPlManager.return_value
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=1,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=2,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+        mock_pl.get_all_playlists_map.return_value = {
+            "PL_OLD": {"v1"}, "PL_NEW": {"v2", "v3"}
+        }
+        mock_pl.add_video_to_playlist.return_value = True
+        mock_pl.remove_video_from_playlist.return_value = True
+        mock_pl.delete_playlist.return_value = True
+
+        result = runner.invoke(app, ["playlist", "dedupe", "--fix", "-y"])
+
+        if result.exit_code != 0:
+            print(result.output)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("2 本を移動", result.output)
+        self.assertIn("1 個のプレイリストを削除しました", result.output)
+        cache.clear.assert_called_once()
+        cache.close.assert_called_once()
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    def test_dedupe_fix_quota_error_on_map_exits_1(
+        self, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        from src.lib.core.quota import QuotaExceededError
+        from src.lib.video.playlist import PlaylistInfo
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_pl = MockPlManager.return_value
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=1,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=2,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+        mock_pl.get_all_playlists_map.side_effect = QuotaExceededError("out")
+
+        result = runner.invoke(app, ["playlist", "dedupe", "--fix", "-y"])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("クォータを使い切っているため統合できません", result.output)
+
+    @patch("src.commands.playlist._make_cache", return_value=None)
+    @patch("src.commands.playlist.get_credentials")
+    @patch("src.commands.playlist.PlaylistManager")
+    @patch("src.commands.playlist.typer.confirm", return_value=False)
+    def test_dedupe_fix_abort_without_yes(
+        self, mock_confirm, MockPlManager, mock_get_credentials, mock_make_cache
+    ):
+        from src.lib.video.playlist import PlaylistInfo
+
+        mock_get_credentials.return_value = MagicMock()
+        mock_pl = MockPlManager.return_value
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=1,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=2,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+        mock_pl.get_all_playlists_map.return_value = {
+            "PL_OLD": {"v1"}, "PL_NEW": {"v2"}
+        }
+
+        result = runner.invoke(app, ["playlist", "dedupe", "--fix"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        mock_pl.add_video_to_playlist.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

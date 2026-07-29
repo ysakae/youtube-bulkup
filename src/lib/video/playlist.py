@@ -410,6 +410,42 @@ class PlaylistManager:
             logger.error(f"Failed to rename playlist {name_or_id}: {e}")
             return False
 
+    def delete_playlist(self, playlist_id: str) -> bool:
+        """プレイリストを削除する (中の動画自体は削除されない)。"""
+        try:
+            service = build(
+                "youtube", "v3", credentials=self.credentials, cache_discovery=False
+            )
+            service.playlists().delete(id=playlist_id).execute()
+
+            # キャッシュからも取り除く。_all_playlist_ids() は _playlists と
+            # _playlist_cache の両方をマージして返すため、片方からしか
+            # 除去しないと削除済みのIDが走査対象に残り続けてしまう。
+            #
+            # _build_title_index(self._playlists) で _playlist_cache を
+            # 丸ごと作り直す方法は取らない: _playlists が空のとき
+            # (テストが _playlist_cache に直接代入したケースなど) に
+            # 実行すると、削除対象と無関係な他のエントリまで巻き込んで
+            # 消えてしまうため。該当エントリだけを個別に除去する。
+            self._playlists = [
+                p for p in self._playlists if p.id != playlist_id
+            ]
+            self._playlist_cache = {
+                title: pid
+                for title, pid in self._playlist_cache.items()
+                if pid != playlist_id
+            }
+
+            logger.info(f"Deleted playlist {playlist_id}")
+            return True
+
+        except HttpError as e:
+            if is_quota_error(e):
+                logger.error(f"Quota exceeded while deleting {playlist_id}: {e}")
+                raise QuotaExceededError(str(e)) from e
+            logger.error(f"Failed to delete playlist {playlist_id}: {e}")
+            return False
+
     def list_playlists(self) -> List[Dict[str, str]]:
         """
         全プレイリストの一覧を取得する。

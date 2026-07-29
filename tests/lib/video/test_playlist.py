@@ -642,6 +642,58 @@ class TestPlaylistPagination(unittest.TestCase):
 
         self.assertEqual(sorted(self.manager._all_playlist_ids()), ["PL1", "PL2"])
 
+    @patch("src.lib.video.playlist.build")
+    def test_deleted_playlist_disappears_from_all_playlist_ids(self, mock_build):
+        """delete_playlist した ID は _all_playlist_ids() から消えること。
+
+        _all_playlist_ids() は _playlists と _playlist_cache の両方を
+        マージして返すため、片方からしか除去しないと削除済みIDが
+        走査対象に残り続けてしまう (Task 6 レビュー指摘)。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = [
+            self._page([
+                self._item("PL_OLD", "運動会", "2020-01-01T00:00:00Z"),
+                self._item("PL_NEW", "運動会", "2024-05-01T00:00:00Z"),
+                self._item("PL_SOLO", "発表会", "2021-01-01T00:00:00Z"),
+            ])
+        ]
+
+        self.manager._ensure_cache()
+        self.assertIn("PL_NEW", self.manager._all_playlist_ids())
+
+        self.manager.delete_playlist("PL_NEW")
+
+        remaining = self.manager._all_playlist_ids()
+        self.assertNotIn("PL_NEW", remaining)
+        self.assertIn("PL_OLD", remaining)
+        self.assertIn("PL_SOLO", remaining)
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_does_not_wipe_cache_when_playlists_list_is_empty(
+        self, mock_build
+    ):
+        """_playlists が空 (_playlist_cache に直接代入されたテスト/呼び出し方) の
+        ときに削除しても、無関係な他のエントリを巻き込んで消してはいけない。
+
+        _build_title_index([]) で _playlist_cache を丸ごと作り直すと、
+        削除対象以外のプレイリストまで _all_playlist_ids() から消えてしまう。
+        """
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+
+        self.manager._playlist_cache = {"A": "PL1", "B": "PL2"}
+        self.manager._initialized = True
+
+        self.manager.delete_playlist("PL1")
+
+        remaining = self.manager._all_playlist_ids()
+        self.assertNotIn("PL1", remaining)
+        self.assertIn(
+            "PL2", remaining, "削除と無関係な PL2 まで消えてしまっている"
+        )
+
 
 class TestPlaylistQuotaHandling(unittest.TestCase):
     def setUp(self):
@@ -744,6 +796,34 @@ class TestPlaylistQuotaHandling(unittest.TestCase):
 
         with self.assertRaises(QuotaExceededError):
             manager._ensure_cache()
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_success(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        self.assertTrue(self.manager.delete_playlist("PL1"))
+        mock_service.playlists().delete.assert_called_with(id="PL1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_raises_on_quota_error(self, mock_build):
+        from src.lib.core.quota import QuotaExceededError
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().delete.return_value.execute.side_effect = (
+            self._quota_error()
+        )
+        with self.assertRaises(QuotaExceededError):
+            self.manager.delete_playlist("PL1")
+
+    @patch("src.lib.video.playlist.build")
+    def test_delete_playlist_returns_false_on_other_error(self, mock_build):
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().delete.return_value.execute.side_effect = (
+            self._other_error()
+        )
+        self.assertFalse(self.manager.delete_playlist("PL1"))
 
 
 class TestPlaylistCacheIntegration(unittest.TestCase):

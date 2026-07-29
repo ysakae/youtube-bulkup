@@ -402,3 +402,172 @@ def list_orphans(
             history.close()
         if cache is not None:
             cache.close()
+
+
+def _merge_duplicate_group(
+    canonical, duplicates, pl_manager, playlist_map, ledger, max_items
+):
+    """1つの重複グループを統合する。
+
+    canonical に動画を集約し、空になった重複プレイリストを削除する。
+
+    Returns: (moved, deleted) — 移動した動画数と削除したプレイリスト数。
+    途中で中断した場合、中身が残るプレイリストは削除しない。
+    """
+    canonical_videos = set(playlist_map.get(canonical.id, set()))
+    moved = 0
+    deleted = 0
+
+    for dup in duplicates:
+        dup_videos = playlist_map.get(dup.id, set())
+        fully_moved = True
+
+        for video_id in sorted(dup_videos):
+            if moved >= max_items:
+                fully_moved = False
+                break
+
+            needs_insert = video_id not in canonical_videos
+            required = ledger.cost_of("insert") if needs_insert else 0
+            required += ledger.cost_of("delete")
+            if ledger.remaining < required:
+                fully_moved = False
+                break
+
+            try:
+                if needs_insert:
+                    if not pl_manager.add_video_to_playlist(canonical.id, video_id):
+                        console.print(
+                            f"[red]移動失敗: {video_id} -> {canonical.title}[/]"
+                        )
+                        fully_moved = False
+                        continue
+                    ledger.charge("insert")
+                    canonical_videos.add(video_id)
+
+                if not pl_manager.remove_video_from_playlist(dup.id, video_id):
+                    console.print(f"[red]削除失敗: {video_id} from {dup.id}[/]")
+                    fully_moved = False
+                    continue
+                ledger.charge("delete")
+                moved += 1
+
+            except QuotaExceededError:
+                console.print("\n[bold red]クォータを使い切りました。中断します。[/]")
+                return moved, deleted
+
+        if fully_moved:
+            try:
+                if pl_manager.delete_playlist(dup.id):
+                    deleted += 1
+                    console.print(f"[green]重複プレイリストを削除: {dup.id}[/]")
+            except QuotaExceededError:
+                console.print("\n[bold red]クォータを使い切りました。中断します。[/]")
+                return moved, deleted
+
+    return moved, deleted
+
+
+@app.command("dedupe")
+def dedupe_playlists(
+    fix: bool = typer.Option(
+        False, "--fix", help="重複を統合する (動画を最古のプレイリストへ移動し、空になった方を削除)"
+    ),
+    max_items: int = typer.Option(50, "--max-items", help="1回の実行で移動する最大動画数"),
+    refresh: bool = typer.Option(False, "--refresh", help="キャッシュを無視してAPIから取得し直す"),
+    yes: bool = typer.Option(False, "-y", "--yes", help="確認プロンプトを省略"),
+):
+    """
+    同名の重複プレイリストを検出し、必要なら統合する。
+
+    検出のみ (--fix なし) はキャッシュがあれば 0 units で実行できる。
+    """
+    setup_logging(level="INFO")
+
+    cache = _make_cache()
+
+    try:
+        credentials = get_credentials()
+        pl_manager = PlaylistManager(credentials, cache=cache)
+
+        try:
+            duplicates = pl_manager.get_duplicate_playlists()
+        except QuotaExceededError:
+            console.print("[bold red]クォータを使い切っているため取得できませんでした。[/]")
+            raise typer.Exit(code=1)
+
+        if not duplicates:
+            console.print("[green]重複しているプレイリストはありません。[/]")
+            return
+
+        total_dups = sum(len(v) - 1 for v in duplicates.values())
+        console.print(f"[bold red]重複しているタイトル:[/] {len(duplicates)}")
+        console.print(f"[bold red]余剰プレイリスト:[/] {total_dups}")
+
+        table = Table(title="Duplicate Playlists")
+        table.add_column("Title", style="magenta")
+        table.add_column("正 (最古)", style="green")
+        table.add_column("重複", style="yellow")
+        for title, items in duplicates.items():
+            table.add_row(
+                title, items[0].id, ", ".join(p.id for p in items[1:])
+            )
+        console.print(table)
+
+        if not fix:
+            console.print("\n[dim]--fix を付けると統合します。[/]")
+            return
+
+        try:
+            playlist_map = pl_manager.get_all_playlists_map(refresh=refresh)
+        except QuotaExceededError:
+            console.print("[bold red]クォータを使い切っているため統合できません。[/]")
+            raise typer.Exit(code=1)
+
+        movable = sum(
+            len(playlist_map.get(p.id, set()))
+            for items in duplicates.values()
+            for p in items[1:]
+        )
+        target_count = min(movable, max_items)
+        estimated = (
+            target_count * (COSTS["insert"] + COSTS["delete"])
+            + total_dups * COSTS["delete"]
+        )
+
+        console.print(
+            f"\n[bold]見積もり:[/] 最大 {target_count} 本の移動 + "
+            f"{total_dups} 個の削除 = 約 {estimated:,} units"
+        )
+
+        if not yes:
+            if not typer.confirm("統合を実行しますか?"):
+                raise typer.Abort()
+
+        ledger = QuotaLedger(estimated)
+        total_moved = 0
+        total_deleted = 0
+
+        for title, items in duplicates.items():
+            if total_moved >= max_items:
+                break
+            console.print(f"\n[bold]統合中: {title}[/]")
+            moved, deleted = _merge_duplicate_group(
+                items[0], items[1:], pl_manager, playlist_map,
+                ledger, max_items - total_moved,
+            )
+            total_moved += moved
+            total_deleted += deleted
+
+        console.print(
+            f"\n[bold green]完了: {total_moved} 本を移動、"
+            f"{total_deleted} 個のプレイリストを削除しました[/] "
+            f"(消費 約 {ledger.spent:,} units)"
+        )
+        if cache is not None:
+            cache.clear()
+            console.print("[dim]キャッシュを破棄しました (次回は最新を取得します)。[/]")
+
+    finally:
+        if cache is not None:
+            cache.close()

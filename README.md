@@ -163,12 +163,26 @@ yt-up playlist rename "Old Name" "New Name"
 どのプレイリストにも属していない動画（Orphan Videos）を一括検索し、履歴に基づいて自動的にプレイリストへ割り当てます。
 
 ```bash
-# 検索のみ（リスト表示）
+# 孤立動画（どのプレイリストにも入っていない動画）を検出
 yt-up playlist orphans
-
-# 自動割り当て実行（--fix）
-yt-up playlist orphans --fix
+yt-up playlist orphans --offline             # キャッシュのみで判定 (0 units)
+yt-up playlist orphans --fix --max-items 50  # 50件だけ割り当てる
 ```
+
+- `--offline`: APIを一切叩かず、キャッシュのみで判定します（0 units）。`--fix` とは併用できません。
+- `--max-items`: 1回の実行で処理する最大件数を指定します（既定: 本日の残り予算から自動算出）。
+- `--refresh`: キャッシュを無視してAPIから取得し直します。
+
+#### 重複プレイリストの統合
+Task 6 のバグにより生成された、同名の重複プレイリストを検出・統合します。
+
+```bash
+# 同名の重複プレイリストを検出・統合
+yt-up playlist dedupe                        # 検出のみ (キャッシュがあれば 0 units)
+yt-up playlist dedupe --fix --max-items 50
+```
+
+`--fix` を付けると、各重複グループの最古のプレイリストを「正」として動画を集約し、空になった重複プレイリストを削除します。検出のみ（`--fix` なし）はキャッシュがあれば 0 units で実行できます。
 
 ### 6. リトライ (Retry)
 過去にアップロードに失敗したファイルを抽出し、再試行します。
@@ -249,6 +263,20 @@ YouTube Data API には1日あたりの使用制限（Quota）があります。
 
 大量の動画をアップロードする場合は、この上限を引き上げる申請が必要です。
 詳しい手順については [docs/QUOTA_INCREASE.md](docs/QUOTA_INCREASE.md) を参照してください。
+
+各操作の消費ユニット:
+
+| 操作 | units |
+|---|---|
+| 動画のアップロード (`videos.insert`) | 1,600 |
+| プレイリストへの追加 (`playlistItems.insert`) | 50 |
+| プレイリストの作成・削除 | 50 |
+| 一覧の取得 (`*.list`、1ページ50件) | 1 |
+
+`playlist orphans --fix` は1本あたり 50 units を消費します。
+`--max-items` で1回の処理件数を制限でき、クォータを使い切った場合は
+自動的に中断して残件数を報告します。翌日に同じコマンドを再実行すると
+残りから再開します。
 
 ## ライセンス
 MIT License
