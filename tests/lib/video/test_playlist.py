@@ -1036,6 +1036,53 @@ class TestPlaylistCacheIntegration(unittest.TestCase):
             "走査が完走していないのに完了と記録されている",
         )
 
+    @staticmethod
+    def _backend_error():
+        """非クォータの一時的なサーバエラー (503 backendError) を模す。"""
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        resp = httplib2.Response({"status": 503})
+        resp.status = 503
+        return HttpError(resp, b'{"error": {"errors": [{"reason": "backendError"}]}}')
+
+    @patch("src.lib.video.playlist.build")
+    def test_prune_is_not_called_when_playlist_list_fails_non_quota(self, mock_build):
+        """プレイリスト一覧の取得が非クォータエラーで失敗した場合、
+        prune によってキャッシュを丸ごと失ってはいけない (回帰1)。
+
+        _ensure_cache は非クォータの HttpError を握りつぶして戻る
+        (_initialized も立たない) ため、走査対象が空になる。ここで
+        無条件に prune すると、一過性のサーバエラー1回でキャッシュの
+        全内容が消えてしまう。
+        """
+        self.cache.save_playlist_items("PL_A", {"v1", "v2"})
+        self.cache.save_playlist_items("PL_B", set())
+        self.cache.mark_complete("playlist_items")
+        before = self.cache.load_playlist_map()
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.side_effect = (
+            self._backend_error()
+        )
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with patch.object(
+            self.cache, "prune_playlist_items", wraps=self.cache.prune_playlist_items
+        ) as spy_prune, patch.object(
+            self.cache, "mark_complete", wraps=self.cache.mark_complete
+        ) as spy_mark_complete:
+            manager.get_all_playlists_map(refresh=True)
+
+            spy_prune.assert_not_called()
+            spy_mark_complete.assert_not_called()
+
+        self.assertEqual(
+            self.cache.load_playlist_map(), before,
+            "一覧取得に失敗しただけで既存のキャッシュが消えてはいけない",
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

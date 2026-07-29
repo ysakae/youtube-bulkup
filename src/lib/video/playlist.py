@@ -590,12 +590,17 @@ class PlaylistManager:
                 if self._cache is not None:
                     self._cache.save_playlist_items(playlist_id, video_ids)
 
-            if self._cache is not None:
+            if self._cache is not None and self._initialized and self._all_playlist_ids():
                 # 走査対象から外れたプレイリスト (YouTube 側で削除された、
                 # dedupe で消した等) の行を落とす。save_playlist_items は
                 # 該当 playlist_id の行しか置換しないため、これを怠ると
                 # 「存在しないプレイリストの中身」がキャッシュに残り、
                 # そこにしか入っていない動画がオーファンとして検出されなくなる。
+                #
+                # ただし _ensure_cache が非クォータの HttpError を握りつぶして
+                # 戻った場合 (_initialized が False のまま) は走査対象が空になる。
+                # この状態で prune すると、一過性のサーバエラー1回でキャッシュを
+                # 丸ごと失ってしまうため、一覧取得が成功したときだけ実行する。
                 self._cache.prune_playlist_items(set(playlist_map.keys()))
                 # 全件を走査し終えたときだけ「完了」を記録する
                 self._cache.mark_complete("playlist_items")

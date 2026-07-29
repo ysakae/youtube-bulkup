@@ -296,21 +296,24 @@ def _fix_orphans(
             processed += 1
             continue
 
-        # プレイリストが未作成なら playlists.insert (50 units) も発生する。
-        # find_playlist_id はキャッシュを見るだけで API を叩かないため、
-        # ここで先に確かめて帳簿に正しく計上する。
-        # (見落とすと実消費が帳簿の最大2倍になる)
-        needs_new_playlist = pl_manager.find_playlist_id(target_playlist) is None
-        insert_count = 2 if needs_new_playlist else 1
-
-        if not ledger.can_afford("insert", insert_count):
-            console.print(
-                f"[bold yellow]予算上限に達しました "
-                f"({ledger.spent:,}/{ledger.budget:,} units)。中断します。[/]"
-            )
-            break
-
         try:
+            # プレイリストが未作成なら playlists.insert (50 units) も発生する。
+            # ここで先に確かめて帳簿に正しく計上する
+            # (見落とすと実消費が帳簿の最大2倍になる)。
+            # find_playlist_id は内部で _ensure_cache を呼ぶため、未初期化
+            # なら playlists.list (1 unit) を発行しクォータを消費しうる。
+            # この呼び出しを try の外に置くと、ここで枯渇したときに
+            # 下の except QuotaExceededError で受け止められず落ちる。
+            needs_new_playlist = pl_manager.find_playlist_id(target_playlist) is None
+            insert_count = 2 if needs_new_playlist else 1
+
+            if not ledger.can_afford("insert", insert_count):
+                console.print(
+                    f"[bold yellow]予算上限に達しました "
+                    f"({ledger.spent:,}/{ledger.budget:,} units)。中断します。[/]"
+                )
+                break
+
             pl_id = pl_manager.get_or_create_playlist(target_playlist)
             if not pl_id:
                 console.print(

@@ -674,6 +674,38 @@ class TestOrphansQuotaControl:
         assert remaining == 3, "残り3件が報告される"
         assert pl_manager.add_video_to_playlist.call_count == 3, "枯渇後は呼ばない"
 
+    def test_fix_orphans_stops_on_quota_error_from_find_playlist_id(self):
+        """find_playlist_id 自体が QuotaExceededError を送出しても、
+        トレースバックで落ちず中断として扱われる (回帰3)。
+
+        find_playlist_id は内部で _ensure_cache を呼ぶため、未初期化なら
+        playlists.list (1 unit) を発行しクォータを消費しうる。この呼び出しが
+        既存の try/except QuotaExceededError の外側にあると、ここで
+        送出された例外が捕捉されず落ちてしまう。
+        """
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaExceededError, QuotaLedger
+
+        orphans = [
+            {"id": f"v{i}", "title": f"動画{i}"} for i in range(5)
+        ]
+        pl_manager = MagicMock()
+        # 2件目の find_playlist_id で quota 枯渇
+        pl_manager.find_playlist_id.side_effect = [
+            "PL1", QuotaExceededError("out of quota"), "PL1", "PL1", "PL1"
+        ]
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+        history = MagicMock()
+        history.get_record_by_video_id.return_value = {"playlist_name": "運動会"}
+
+        assigned, remaining = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=5, yes=True
+        )
+
+        assert assigned == 1, "枯渇前の1件だけが成功する"
+        assert remaining == 4, "残り4件が報告される"
+
     def test_fix_orphans_records_synced_state(self):
         from src.commands.playlist import _fix_orphans
         from src.lib.core.quota import QuotaLedger

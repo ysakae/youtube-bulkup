@@ -361,6 +361,34 @@ class TestPlaylistSynced:
         assert synced.count(1) == 1, "複数行がまとめて更新されている"
         assert rows[-1]["playlist_synced"] == 1, "最新の行が更新されるべき"
 
+    def test_get_record_by_video_id_reads_the_row_set_playlist_synced_wrote(
+        self, history
+    ):
+        """同一 video_id の行が複数あっても、set_playlist_synced が更新した
+        行 (timestamp/rowid が最大の行) を get_record_by_video_id で読める
+        こと (回帰2)。
+
+        set_playlist_synced は ORDER BY timestamp DESC, rowid DESC で
+        最新1行を更新するが、get_record_by_video_id に同じ ORDER BY が
+        無いと idx_video_id 経由で最古の行が返り、書いた行と読む行が
+        食い違って playlist_synced が永久に NULL に見えてしまう。
+        """
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/a.mp4', 'h1', 'dup', 100)"
+        )
+        history.conn.execute(
+            "INSERT INTO uploads (file_path, file_hash, video_id, timestamp) "
+            "VALUES ('/b.mp4', 'h2', 'dup', 200)"
+        )
+        history.conn.commit()
+
+        history.set_playlist_synced("dup", True)
+        record = history.get_record_by_video_id("dup")
+
+        assert record["file_path"] == "/b.mp4", "最新行 (rowid/timestamp 最大) を読むべき"
+        assert record["playlist_synced"] == 1
+
     def test_get_unsynced_records_returns_only_zero(self, history):
         history.add_record("/a.mp4", "h1", "vid1", {}, playlist_name="PL")
         history.add_record("/b.mp4", "h2", "vid2", {}, playlist_name="PL")

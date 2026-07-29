@@ -291,9 +291,18 @@ class HistoryManager:
         return self._row_to_dict(row) if row else None
 
     def get_record_by_video_id(self, video_id: str) -> Optional[Dict[str, Any]]:
-        """Get an upload record by video ID."""
+        """Get an upload record by video ID.
+
+        video_id に UNIQUE 制約は無く、同一 video_id の行が複数ありうる。
+        set_playlist_synced が更新するのは
+        ORDER BY timestamp DESC, rowid DESC の最新1行なので、ここでも
+        同じ並び順にしないと読み書きの対象がずれてしまう
+        (ORDER BY 無しだと idx_video_id 経由で最古の行が返る)。
+        """
         cursor = self.conn.execute(
-            "SELECT * FROM uploads WHERE video_id = ? LIMIT 1", (video_id,)
+            "SELECT * FROM uploads WHERE video_id = ? "
+            "ORDER BY timestamp DESC, rowid DESC LIMIT 1",
+            (video_id,),
         )
         row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
