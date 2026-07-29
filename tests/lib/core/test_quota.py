@@ -1,3 +1,6 @@
+import time
+from unittest.mock import MagicMock
+
 import httplib2
 import pytest
 from googleapiclient.errors import HttpError
@@ -6,6 +9,7 @@ from src.lib.core.quota import (
     COSTS,
     QuotaExceededError,
     QuotaLedger,
+    count_today_uploads,
     is_quota_error,
 )
 
@@ -127,3 +131,37 @@ class TestQuotaLedger:
     def test_costs_table_is_exposed(self):
         assert COSTS["insert"] == 50
         assert COSTS["list"] == 1
+
+
+class TestCountTodayUploads:
+    """本日の成功アップロード本数の集計 (Video Uploads per day の消費本数)。"""
+
+    def test_counts_only_today_successful_uploads(self):
+        now = time.time()
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": now},
+            {"status": "success", "timestamp": now},
+            # 一昨日の分は本日の枠を消費しない
+            {"status": "success", "timestamp": now - 86400 * 2},
+            # 失敗した分もアップロード枠を消費しない
+            {"status": "failed", "timestamp": now},
+        ]
+
+        assert count_today_uploads(history) == 2
+
+    def test_null_timestamp_is_ignored_without_error(self):
+        """timestamp が NULL の行があっても TypeError にならない。"""
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": None},
+            {"status": "success", "timestamp": time.time()},
+        ]
+
+        assert count_today_uploads(history) == 1
+
+    def test_empty_history(self):
+        history = MagicMock()
+        history.get_all_records.return_value = []
+
+        assert count_today_uploads(history) == 0

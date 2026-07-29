@@ -589,6 +589,13 @@ class TestOrphansQuotaControl:
         assert playlist_cmd._default_max_items(history) == 180
 
     def test_default_max_items_subtracts_today_uploads(self, monkeypatch):
+        """本日のアップロードに伴うプレイリスト追加分だけを差し引く。
+
+        動画本体のアップロード (videos.insert) は Queries per day ではなく
+        「Video Uploads per day」(本数ベースの別枠) でカウントされるため、
+        1,600 units は差し引かない。差し引くのはアップロード時の
+        playlistItems.insert (50 units) のみ。
+        """
         import time
 
         from src.commands import playlist as playlist_cmd
@@ -606,8 +613,54 @@ class TestOrphansQuotaControl:
         )
         monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 0)
 
-        # 10000 - 2*1600 = 6800 -> 6800 // 50 = 136
-        assert playlist_cmd._default_max_items(history) == 136
+        # 10000 - 2*50 = 9900 -> 9900 // 50 = 198
+        assert playlist_cmd._default_max_items(history) == 198
+
+    def test_default_max_items_does_not_charge_upload_units(self, monkeypatch):
+        """アップロード1本を 1,600 units として差し引かない (回帰防止)。
+
+        旧実装では 7 本アップロードした時点で
+        10000 - 1000 - 7*1600 < 0 となり予算が 0 になり、その日は
+        orphans/dedupe の --fix が一切動かなくなっていた。
+        """
+        import time
+
+        from src.commands import playlist as playlist_cmd
+
+        now = time.time()
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": now} for _ in range(7)
+        ]
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 1000)
+
+        # 10000 - 1000 - 7*50 = 8650 -> 8650 // 50 = 173 (旧実装では 0)
+        assert playlist_cmd._default_max_items(history) == 173
+
+    def test_default_max_items_positive_after_100_uploads(self, monkeypatch):
+        """本日 100 本 (Video Uploads per day の上限) アップロード済みでも
+        予算が残る。これが本修正の主目的。"""
+        import time
+
+        from src.commands import playlist as playlist_cmd
+
+        now = time.time()
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": now} for _ in range(100)
+        ]
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 1000)
+
+        # 10000 - 1000 - 100*50 = 4000 -> 4000 // 50 = 80 件
+        assert playlist_cmd._default_max_items(history) == 80
 
     def test_default_max_items_ignores_yesterday_uploads(self, monkeypatch):
         """本日分だけを勘定する (境界の確認)。"""
@@ -646,7 +699,8 @@ class TestOrphansQuotaControl:
         monkeypatch.setattr(
             type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
         )
-        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 0)
+        # 10000 - 9000 - 100*50 = -4000 -> 0 に丸める
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 9000)
 
         assert playlist_cmd._default_max_items(history) == 0
 
@@ -846,6 +900,57 @@ class TestOrphansQuotaControl:
             "--max-items が予算を上書きしてしまっている"
         )
         assert "残り 3 件" in result.output
+
+    def test_orphans_fix_runs_after_100_uploads_today(self, monkeypatch):
+        """本日 100 本アップロード済みでも orphans --fix が動作する。
+
+        「Video Uploads per day」(100 本/日) を使い切っていても、
+        Queries per day (10,000 units) には余裕があるため
+        --fix は動かなければならない。旧実装ではアップロード 1 本を
+        1,600 units として差し引いていたため、7 本を超えた時点で
+        「本日の推定残量では1件も処理できません」となり動かなかった。
+        """
+        import time
+
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 1000)
+
+        now = time.time()
+        orphans = [{"id": f"v{i}", "title": f"動画{i}"} for i in range(5)]
+
+        with patch("src.commands.playlist.get_credentials") as mock_get_credentials, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.lib.video.manager.VideoManager") as MockVidManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_get_credentials.return_value = MagicMock()
+            mock_vid = MockVidManager.return_value
+            mock_vid.get_all_uploaded_videos.return_value = orphans
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_all_playlists_map.return_value = {}
+            mock_pl.get_or_create_playlist.return_value = "PL1"
+            mock_pl.add_video_to_playlist.return_value = True
+
+            mock_hist = MockHistoryMgr.return_value
+            # 本日 100 本アップロード済み (Video Uploads per day を使い切った状態)
+            mock_hist.get_all_records.return_value = [
+                {"status": "success", "timestamp": now} for _ in range(100)
+            ]
+            mock_hist.get_record_by_video_id.return_value = {"playlist_name": "運動会"}
+
+            result = runner.invoke(cli_app, ["playlist", "orphans", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert "本日の推定残量では1件も処理できません" not in result.output
+        assert mock_pl.add_video_to_playlist.call_count == 5, (
+            "アップロード済み本数によって --fix が止められている"
+        )
 
 
 class _FakeHistory:
@@ -1119,7 +1224,9 @@ class TestOrphansZeroBudgetMessage:
         monkeypatch.setattr(
             type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
         )
-        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 0)
+        # 本日 90 本アップロード = プレイリスト追加 90*50 = 4,500 units 消費。
+        # 予備 5,500 と合わせて上限 10,000 に達し、予算 0 になる。
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 5500)
 
         import time
         now = time.time()
@@ -1139,7 +1246,7 @@ class TestOrphansZeroBudgetMessage:
             mock_pl.get_all_playlists_map.return_value = {}
 
             mock_hist = MockHistoryMgr.return_value
-            # 本日 90 本アップロード済み = 144,000 units
+            # 本日 90 本アップロード済み = プレイリスト追加分 4,500 units
             mock_hist.get_all_records.return_value = [
                 {"status": "success", "timestamp": now} for _ in range(90)
             ]
@@ -1150,7 +1257,7 @@ class TestOrphansZeroBudgetMessage:
         assert result.exit_code == 0
         assert "本日の推定残量では1件も処理できません" in result.output
         assert "10,000" in result.output, "上限の設定値が示されていない"
-        assert "144,000" in result.output, "本日の推定使用量が示されていない"
+        assert "4,500" in result.output, "本日の推定使用量が示されていない"
         assert "quota.daily_limit" in result.output, "どこを直せばよいか示されていない"
 
     def test_dedupe_message_includes_limit_and_usage(self, monkeypatch):

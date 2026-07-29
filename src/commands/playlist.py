@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -9,7 +8,12 @@ from rich.table import Table
 from ..lib.auth.auth import get_credentials
 from ..lib.core.config import config
 from ..lib.core.logger import setup_logging
-from ..lib.core.quota import COSTS, QuotaExceededError, QuotaLedger
+from ..lib.core.quota import (
+    COSTS,
+    QuotaExceededError,
+    QuotaLedger,
+    count_today_uploads,
+)
 from ..lib.data.history import HistoryManager
 from ..lib.data.snapshot import SnapshotCache
 from ..lib.video.playlist import PlaylistInfo, PlaylistManager
@@ -162,29 +166,32 @@ def _make_cache() -> Optional[SnapshotCache]:
 
 
 def _today_used_units(history: HistoryManager) -> int:
-    """本日すでに消費したと推定されるユニット数を返す。
+    """本日すでに Queries per day を消費したと推定されるユニット数を返す。
 
-    本日のアップロード件数 x 1600 を使用済みとみなす。実際の残量は
-    API 側にしか無いため厳密ではないが、QuotaLedger と 403 検知で補う。
+    動画のアップロード (videos.insert) 自体はここに含めない。GCP コンソール
+    の実測では、アップロードは「Video Uploads per day」(既定 100 本/日) と
+    いう本数ベースの独立した枠でカウントされ、Queries per day (既定 10,000
+    units) は消費しないため (公式ドキュメントの 1,600 units/本で計算すると
+    7本で割当を超えるはずだが、実際には1日 95〜104 本のアップロードが
+    成功している)。
 
-    「本日」の境界は既存の check_quota_limit (upload_manager.py) と
-    揃えてローカル時間の午前0時とする。
+    一方、アップロード時のプレイリストへの追加 (playlistItems.insert = 50
+    units) は Queries per day を消費する。そのため
+    「本日のアップロード件数 x 50 units」を使用済みとして計上する。
+
+    実際の残量は API 側にしか無いため厳密ではないが、QuotaLedger と
+    403 検知で補う。
     """
-    now = datetime.now()
-    today_start = datetime(now.year, now.month, now.day).timestamp()
-    records = history.get_all_records(limit=0)
-    today_uploads = [
-        r for r in records
-        # timestamp が NULL の行があると None >= float で TypeError になる
-        if r.get("status") == "success" and (r.get("timestamp") or 0) >= today_start
-    ]
-    return len(today_uploads) * COSTS["upload"]
+    return count_today_uploads(history) * COSTS["insert"]
 
 
 def _default_max_items(
     history: HistoryManager, unit_cost: int = COSTS["insert"]
 ) -> int:
-    """本日の残り予算から処理可能な件数を見積もる。
+    """本日の残り予算 (Queries per day) から処理可能な件数を見積もる。
+
+    予算 = Queries per day の上限 - 予備 - 本日のアップロードに伴う
+    プレイリスト追加分。
 
     unit_cost: 1件あたりの消費ユニット。orphans は insert のみ (50) だが、
     dedupe は insert + delete (100) なので呼び出し側で変える。
@@ -205,7 +212,8 @@ def _print_no_budget_message(history: HistoryManager) -> None:
     used = _today_used_units(history)
     console.print(
         f"[bold red]本日の推定残量では1件も処理できません"
-        f"(上限 {limit:,} / 本日の推定使用 {used:,} ユニット / "
+        f"(Queries per day の上限 {limit:,} / 本日の推定使用 {used:,} ユニット "
+        f"(アップロード時のプレイリスト追加分) / "
         f"予備 {config.quota.reserve:,} ユニット)。[/]"
     )
     console.print(

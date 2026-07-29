@@ -2,23 +2,83 @@
 
 クォータ枯渇の判定と、ローカルでの消費ユニット見積もりを提供する。
 コストの根拠: https://developers.google.com/youtube/v3/determine_quota_cost
+
+クォータの枠は2種類あることに注意 (GCP コンソールの実測で確認):
+
+- Queries per day (既定 10,000 units): playlistItems.insert (50) や
+  *.list (1) など、通常の API 呼び出しがここから引かれる。
+- Video Uploads per day (既定 100 本): 動画のアップロード
+  (videos.insert) はこの「本数ベースの独立した枠」でカウントされ、
+  Queries per day は消費しない。
 """
 
 import logging
-from typing import Dict
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 from googleapiclient.errors import HttpError
 
 logger = logging.getLogger("youtube_up")
 
-# 操作あたりの消費ユニット
+# 操作あたりの消費ユニット (Queries per day から引かれる分)
 COSTS: Dict[str, int] = {
     "list": 1,
     "insert": 50,
     "update": 50,
     "delete": 50,
-    "upload": 1600,  # videos.insert
+    # videos.insert の「公式ドキュメント上の」コスト。
+    # ただし実際の GCP では動画のアップロードは Video Uploads per day
+    # (本数ベースの別枠) でカウントされ、Queries per day は消費しない。
+    # そのため Queries per day の予算計算には使わないこと。
+    # (実測: 1日95〜104本のアップロードが成功しているが、1,600 units 換算
+    #  なら7本で 10,000 units の割当を超えるはずで、実態と合わない)
+    "upload": 1600,
 }
+
+
+def today_start_timestamp() -> float:
+    """「本日」の開始 (ローカル時間の午前0時) の UNIX 時刻を返す。
+
+    実際のクォータのリセットは太平洋時間の深夜 (日本時間の16〜17時頃) に
+    起きるためこの境界とはずれるが、ローカル時間の方がユーザーの体感に
+    近く、各コマンドの集計を揃える意味もあるためこちらを採る。
+    ずれによる誤差 (前日夕方以降の分を数え落とす / リセット後も当日午前の
+    分を数え続ける) はあくまで見積もりの範囲内で、実際の枯渇は
+    403 quotaExceeded / 429 rateLimitExceeded の検知で止める。
+    """
+    now = datetime.now()
+    return datetime(now.year, now.month, now.day).timestamp()
+
+
+def is_today_success(
+    record: Dict[str, Any], today_start: Optional[float] = None
+) -> bool:
+    """履歴レコードが「本日成功したアップロード」かどうかを判定する。
+
+    today_start: 本日の開始時刻。多数のレコードを走査する場合は
+    呼び出し側で一度だけ計算して渡すこと (省略時は毎回計算する)。
+    """
+    if today_start is None:
+        today_start = today_start_timestamp()
+    # timestamp が NULL の行があると None >= float で TypeError になる
+    return (
+        record.get("status") == "success"
+        and (record.get("timestamp") or 0) >= today_start
+    )
+
+
+def count_today_uploads(history: Any) -> int:
+    """本日すでにアップロードに成功した本数を返す。
+
+    Video Uploads per day (本数ベースの枠) をどれだけ消費したかの見積もり。
+
+    history: get_all_records(limit=0) を持つ履歴マネージャ
+             (HistoryManager と同じインターフェース)。
+    """
+    today_start = today_start_timestamp()
+    return sum(
+        1 for r in history.get_all_records(limit=0) if is_today_success(r, today_start)
+    )
 
 
 class QuotaExceededError(Exception):
