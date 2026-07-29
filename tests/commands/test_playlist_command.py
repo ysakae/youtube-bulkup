@@ -816,6 +816,374 @@ class TestOrphansQuotaControl:
         assert "残り 3 件" in result.output
 
 
+class _FakeHistory:
+    """playlist_synced を実DBと同じ意味論で保持する軽量なスタブ。
+
+    set_playlist_synced が後続の get_record_by_video_id に反映されるため、
+    「同じコマンドを2回実行した」状況を再現できる。
+    """
+
+    def __init__(self, records):
+        self._records = records
+        self.set_calls = []
+
+    def get_record_by_video_id(self, video_id):
+        return self._records.get(video_id)
+
+    def set_playlist_synced(self, video_id, synced):
+        self.set_calls.append((video_id, synced))
+        if video_id in self._records:
+            self._records[video_id]["playlist_synced"] = 1 if synced else 0
+
+    def get_all_records(self, limit=0):
+        return list(self._records.values())
+
+
+class TestFixOrphansResume:
+    """Critical 1: 差分再開が既定フローで機能すること。"""
+
+    def test_second_run_does_not_reprocess_assigned_orphan(self):
+        """同じオーファン一覧で2回実行しても、2回目は API を叩かない。
+
+        1回目の成功で playlist_synced=1 が記録されるため、2回目は
+        対象選定の段階でスキップされなければならない。これが無いと
+        YouTube が videoAlreadyInPlaylist を返して True になり、
+        「Assigned」と表示しつつ 50 units x N を空費する。
+        """
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v1", "title": "動画1"}]
+        history = _FakeHistory({"v1": {"playlist_name": "運動会"}})
+
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        assigned1, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True
+        )
+        assert assigned1 == 1
+        assert pl_manager.add_video_to_playlist.call_count == 1
+
+        assigned2, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True
+        )
+
+        assert assigned2 == 0, "2回目は1件も割り当てないはず"
+        assert pl_manager.add_video_to_playlist.call_count == 1, (
+            "同期済みの動画に対して再度 API を叩いている (quota の空費)"
+        )
+
+    def test_skips_only_playlist_synced_one(self):
+        """playlist_synced == 1 のときだけスキップする。"""
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v_synced", "title": "同期済"}]
+        history = _FakeHistory(
+            {"v_synced": {"playlist_name": "運動会", "playlist_synced": 1}}
+        )
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+
+        assigned, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True
+        )
+
+        assert assigned == 0
+        pl_manager.add_video_to_playlist.assert_not_called()
+
+    def test_null_playlist_synced_is_not_skipped(self):
+        """NULL (不明) は「この機能より前の既存レコード」なのでスキップしない。
+
+        ユーザーの 10,027 件はすべて NULL であり、ここをスキップすると
+        本来の処理対象が丸ごと漏れる。
+        """
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [
+            {"id": "v_null", "title": "不明"},
+            {"id": "v_missing_key", "title": "キー無し"},
+        ]
+        history = _FakeHistory({
+            "v_null": {"playlist_name": "運動会", "playlist_synced": None},
+            "v_missing_key": {"playlist_name": "運動会"},
+        })
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        assigned, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True
+        )
+
+        assert assigned == 2
+        assert pl_manager.add_video_to_playlist.call_count == 2
+
+    def test_failed_playlist_synced_zero_is_retried(self):
+        """0 (追加失敗) は再試行の対象。スキップしてはいけない。"""
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v_failed", "title": "失敗済"}]
+        history = _FakeHistory(
+            {"v_failed": {"playlist_name": "運動会", "playlist_synced": 0}}
+        )
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        assigned, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000), max_items=10, yes=True
+        )
+
+        assert assigned == 1
+
+    def test_successful_assignment_is_written_to_cache(self, tmp_path):
+        """成功した割り当てが SnapshotCache に増分反映される (Critical 1a)。
+
+        これが無いと TTL (24時間) 内の再実行で get_all_playlists_map が
+        「割り当てる前のマップ」を返し、同じオーファンが再構築される。
+        """
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+        from src.lib.data.snapshot import SnapshotCache
+
+        cache = SnapshotCache(db_path=str(tmp_path / "snap.db"))
+        try:
+            cache.save_playlist_items("PL1", set())
+
+            orphans = [{"id": "v1", "title": "動画1"}]
+            history = _FakeHistory({"v1": {"playlist_name": "運動会"}})
+            pl_manager = MagicMock()
+            pl_manager.find_playlist_id.return_value = "PL1"
+            pl_manager.get_or_create_playlist.return_value = "PL1"
+            pl_manager.add_video_to_playlist.return_value = True
+
+            _fix_orphans(
+                orphans, pl_manager, history, QuotaLedger(100000),
+                max_items=10, yes=True, cache=cache,
+            )
+
+            assert cache.load_playlist_map() == {"PL1": {"v1"}}
+        finally:
+            cache.close()
+
+    def test_failed_assignment_is_not_written_to_cache(self, tmp_path):
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+        from src.lib.data.snapshot import SnapshotCache
+
+        cache = SnapshotCache(db_path=str(tmp_path / "snap.db"))
+        try:
+            orphans = [{"id": "v1", "title": "動画1"}]
+            history = _FakeHistory({"v1": {"playlist_name": "運動会"}})
+            pl_manager = MagicMock()
+            pl_manager.find_playlist_id.return_value = "PL1"
+            pl_manager.get_or_create_playlist.return_value = "PL1"
+            pl_manager.add_video_to_playlist.return_value = False
+
+            _fix_orphans(
+                orphans, pl_manager, history, QuotaLedger(100000),
+                max_items=10, yes=True, cache=cache,
+            )
+
+            assert cache.load_playlist_map() == {}
+        finally:
+            cache.close()
+
+    def test_cache_none_still_works(self):
+        """cache=None (キャッシュ無効設定) でも従来どおり動く。"""
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v1", "title": "動画1"}]
+        history = _FakeHistory({"v1": {"playlist_name": "運動会"}})
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        assigned, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(100000),
+            max_items=10, yes=True, cache=None,
+        )
+        assert assigned == 1
+
+
+class TestFixOrphansPlaylistInsertCost:
+    """Important 3: playlists.insert (50 units) を帳簿に計上する。"""
+
+    def test_new_playlist_charges_two_inserts(self):
+        """新規作成になる場合は playlists.insert + playlistItems.insert = 100 units。"""
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v1", "title": "動画1"}]
+        history = _FakeHistory({"v1": {"playlist_name": "新しいリスト"}})
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = None  # まだ存在しない
+        pl_manager.get_or_create_playlist.return_value = "PL_NEW"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        ledger = QuotaLedger(100000)
+        _fix_orphans(
+            orphans, pl_manager, history, ledger, max_items=10, yes=True
+        )
+
+        assert ledger.spent == 100, "playlists.insert の 50 units が計上されていない"
+
+    def test_existing_playlist_charges_one_insert(self):
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v1", "title": "動画1"}]
+        history = _FakeHistory({"v1": {"playlist_name": "運動会"}})
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = "PL1"
+        pl_manager.get_or_create_playlist.return_value = "PL1"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        ledger = QuotaLedger(100000)
+        _fix_orphans(
+            orphans, pl_manager, history, ledger, max_items=10, yes=True
+        )
+
+        assert ledger.spent == 50
+
+    def test_stops_when_budget_cannot_cover_playlist_creation(self):
+        """新規作成に必要な 100 units が無ければ着手しない。"""
+        from src.commands.playlist import _fix_orphans
+        from src.lib.core.quota import QuotaLedger
+
+        orphans = [{"id": "v1", "title": "動画1"}]
+        history = _FakeHistory({"v1": {"playlist_name": "新しいリスト"}})
+        pl_manager = MagicMock()
+        pl_manager.find_playlist_id.return_value = None
+        pl_manager.get_or_create_playlist.return_value = "PL_NEW"
+        pl_manager.add_video_to_playlist.return_value = True
+
+        assigned, _ = _fix_orphans(
+            orphans, pl_manager, history, QuotaLedger(50), max_items=10, yes=True
+        )
+
+        assert assigned == 0
+        pl_manager.get_or_create_playlist.assert_not_called()
+
+
+class TestOrphansZeroBudgetMessage:
+    """Critical 2c: 残量0のメッセージに現在の設定値と対処法を含める。"""
+
+    def test_message_includes_limit_and_usage_and_setting_name(self, monkeypatch):
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 0)
+
+        import time
+        now = time.time()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.lib.video.manager.VideoManager") as MockVidManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_vid = MockVidManager.return_value
+            mock_vid.get_all_uploaded_videos.return_value = [
+                {"id": "v1", "title": "動画1"}
+            ]
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_all_playlists_map.return_value = {}
+
+            mock_hist = MockHistoryMgr.return_value
+            # 本日 90 本アップロード済み = 144,000 units
+            mock_hist.get_all_records.return_value = [
+                {"status": "success", "timestamp": now} for _ in range(90)
+            ]
+            mock_hist.get_record_by_video_id.return_value = {"playlist_name": "運動会"}
+
+            result = runner.invoke(cli_app, ["playlist", "orphans", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert "本日の推定残量では1件も処理できません" in result.output
+        assert "10,000" in result.output, "上限の設定値が示されていない"
+        assert "144,000" in result.output, "本日の推定使用量が示されていない"
+        assert "quota.daily_limit" in result.output, "どこを直せばよいか示されていない"
+
+    def test_dedupe_message_includes_limit_and_usage(self, monkeypatch):
+        from src.commands import playlist as playlist_cmd
+        from src.lib.video.playlist import PlaylistInfo
+        from src.main import app as cli_app
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 10000)
+
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=1,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+            mock_hist = MockHistoryMgr.return_value
+            mock_hist.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert "本日の推定残量では1件も処理できません" in result.output
+        assert "quota.daily_limit" in result.output
+
+
+class TestOrphansListTruncation:
+    """Minor: オーファンが大量にあるとき一覧を省略する。"""
+
+    def test_long_orphan_list_is_truncated(self):
+        from src.main import app as cli_app
+
+        videos = [{"id": f"v{i}", "title": f"動画{i}"} for i in range(80)]
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.lib.video.manager.VideoManager") as MockVidManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            MockVidManager.return_value.get_all_uploaded_videos.return_value = videos
+            MockPlManager.return_value.get_all_playlists_map.return_value = {}
+            MockHistoryMgr.return_value.get_record_by_video_id.return_value = None
+
+            result = runner.invoke(cli_app, ["playlist", "orphans"])
+
+        assert result.exit_code == 0
+        assert "他 30 件" in result.output, "省略表示が出ていない"
+        assert "動画79" not in result.output, "全件出力してしまっている"
+
+
 class TestDedupe:
     """重複プレイリストの統合。"""
 
@@ -1188,7 +1556,10 @@ class TestDedupeCommand(unittest.TestCase):
         # --fix は破壊的操作なので、24時間キャッシュされたスナップショットではなく
         # 必ず最新の動画マップを取得する (Critical レビュー対応)。
         mock_pl.get_all_playlists_map.assert_called_once_with(refresh=True)
-        cache.clear.assert_called_once()
+        # キャッシュは破棄するが、dedupe が変えない videos は残す
+        # (次回 orphans での約400 units の再取得を避けるため)。
+        cache.clear.assert_any_call("playlists")
+        cache.clear.assert_any_call("playlist_items")
         cache.close.assert_called_once()
         mock_hist.close.assert_called_once()
 
@@ -1309,7 +1680,9 @@ class TestDedupeCommand(unittest.TestCase):
             result.output.count("クォータを使い切りました"), 1,
             "quota 枯渇メッセージがグループの数だけ繰り返し表示されている",
         )
-        self.assertIn("残り 1 グループ", result.output)
+        # 中断したグループは「処理済み」ではないので残件に数える。
+        # (以前は processed_groups に加算していたため 1 件過少に報告していた)
+        self.assertIn("残り 2 グループ", result.output)
         mock_pl.delete_playlist.assert_not_called()
 
 
@@ -1405,6 +1778,359 @@ class TestDedupeQuotaControl:
         assert result.exit_code == 0
         assert "本日の推定残量では1件も処理できません" in result.output
         mock_pl.get_all_playlists_map.assert_not_called()
+
+
+class TestDedupeDeletionBudget:
+    """Important 1: 削除分も本日の残量で上限を受ける。"""
+
+    @staticmethod
+    def _pair(suffix, published_new="2024-01-01T00:00:00Z"):
+        from src.lib.video.playlist import PlaylistInfo
+
+        old = PlaylistInfo(
+            id=f"PL_OLD{suffix}", title=f"タイトル{suffix}", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id=f"PL_NEW{suffix}", title=f"タイトル{suffix}", item_count=0,
+            privacy="private", published_at=published_new,
+        )
+        return old, new
+
+    def test_empty_duplicates_are_capped_by_daily_budget(self, monkeypatch):
+        """中身が空の重複が大量にあっても、1回の実行で使い切らない。
+
+        移動0件では外側ループの打ち切り判定が発火しないため、以前は
+        200個の空重複を一度に削除して 10,000 units を消費していた。
+        """
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        # effective_daily_quota=10000, reserve=9900 -> budget=100
+        # -> unit_cost 100 -> budget_items = 1
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 9900)
+
+        groups = {}
+        playlist_map = {}
+        for i in range(10):
+            old, new = self._pair(i)
+            groups[old.title] = [old, new]
+            playlist_map[old.id] = set()
+            playlist_map[new.id] = set()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = groups
+            mock_pl.get_all_playlists_map.return_value = playlist_map
+            mock_pl.delete_playlist.return_value = True
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert mock_pl.delete_playlist.call_count < 10, (
+            "空の重複の削除が本日の残量で頭打ちになっていない"
+        )
+
+    def test_ledger_budget_is_capped_by_daily_budget(self, monkeypatch):
+        """ledger の予算が estimated ではなく本日の残量で頭打ちになる。"""
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 9900)  # budget=100
+
+        groups = {}
+        playlist_map = {}
+        for i in range(20):
+            old, new = self._pair(i)
+            groups[old.title] = [old, new]
+            playlist_map[old.id] = set()
+            playlist_map[new.id] = set()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = groups
+            mock_pl.get_all_playlists_map.return_value = playlist_map
+            mock_pl.delete_playlist.return_value = True
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        # 予算 100 units = delete 2回分。外側ループの打ち切りでさらに絞られる。
+        assert mock_pl.delete_playlist.call_count <= 2
+
+    def test_stopping_by_limit_reports_remaining_groups(self, monkeypatch):
+        """Minor: 上限で打ち切ったときも残件を報告する。"""
+        from src.commands import playlist as playlist_cmd
+        from src.main import app as cli_app
+
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 9900)  # budget_items=1
+
+        groups = {}
+        playlist_map = {}
+        for i in range(3):
+            old, new = self._pair(i)
+            groups[old.title] = [old, new]
+            playlist_map[old.id] = set()
+            playlist_map[new.id] = set()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = groups
+            mock_pl.get_all_playlists_map.return_value = playlist_map
+            mock_pl.delete_playlist.return_value = True
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert "グループ" in result.output
+        assert "残り 2 グループ" in result.output
+
+
+class TestDedupeFailedMoveReport:
+    """Important 6: 移動できなかった動画を報告する。"""
+
+    def test_failed_moves_are_reported_at_the_end(self):
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+        from src.lib.video.playlist import PlaylistInfo
+
+        canonical = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        dup = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=2,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        playlist_map = {"PL_OLD": set(), "PL_NEW": {"v1", "v2"}}
+
+        pl_manager = MagicMock()
+        pl_manager.add_video_to_playlist.side_effect = [False, True]
+        pl_manager.remove_video_from_playlist.return_value = True
+
+        failed = []
+        _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map,
+            QuotaLedger(100000), max_items=100, failed_moves=failed,
+        )
+
+        assert ("運動会", "v1") in failed
+
+    def test_command_prints_failed_moves(self):
+        from src.lib.video.playlist import PlaylistInfo
+        from src.main import app as cli_app
+
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=1,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=None):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+            mock_pl.get_all_playlists_map.return_value = {
+                "PL_OLD": set(), "PL_NEW": {"v_deleted"}
+            }
+            mock_pl.add_video_to_playlist.return_value = False
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        assert "移動できなかった動画" in result.output
+        assert "v_deleted" in result.output
+
+
+class TestDedupeCacheInvalidation:
+    """Minor: dedupe は videos キャッシュまで捨てない。"""
+
+    def test_only_playlist_caches_are_cleared(self):
+        from src.lib.video.playlist import PlaylistInfo
+        from src.main import app as cli_app
+
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=1,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        cache = MagicMock()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=cache):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+            mock_pl.get_all_playlists_map.return_value = {
+                "PL_OLD": set(), "PL_NEW": {"v1"}
+            }
+            mock_pl.add_video_to_playlist.return_value = True
+            mock_pl.remove_video_from_playlist.return_value = True
+            mock_pl.delete_playlist.return_value = True
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        cache.clear.assert_any_call("playlists")
+        cache.clear.assert_any_call("playlist_items")
+        for call in cache.clear.call_args_list:
+            assert call.args[0] != "videos", "videos キャッシュまで捨てている"
+
+    def test_cache_is_not_cleared_when_nothing_changed(self):
+        """変更が0件なら破棄しない (次回 orphans の再取得を招かない)。"""
+        from src.lib.video.playlist import PlaylistInfo
+        from src.main import app as cli_app
+
+        old = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=0,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        # item_count と playlist_map の件数が食い違うため削除も移動もされない
+        new = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=9,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        cache = MagicMock()
+
+        with patch("src.commands.playlist.get_credentials") as mock_creds, \
+             patch("src.commands.playlist.PlaylistManager") as MockPlManager, \
+             patch("src.commands.playlist.HistoryManager") as MockHistoryMgr, \
+             patch("src.commands.playlist._make_cache", return_value=cache):
+
+            mock_creds.return_value = MagicMock()
+            mock_pl = MockPlManager.return_value
+            mock_pl.get_duplicate_playlists.return_value = {"運動会": [old, new]}
+            mock_pl.get_all_playlists_map.return_value = {
+                "PL_OLD": set(), "PL_NEW": set()
+            }
+
+            MockHistoryMgr.return_value.get_all_records.return_value = []
+
+            result = runner.invoke(cli_app, ["playlist", "dedupe", "--fix", "-y"])
+
+        assert result.exit_code == 0
+        cache.clear.assert_not_called()
+
+
+class TestDedupeRefreshOptionRemoved:
+    """Important 5: 死にオプション --refresh を削除する。"""
+
+    def test_refresh_option_is_not_offered(self):
+        """`playlist dedupe --help` に --refresh が現れない。
+
+        _ensure_cache は毎回必ず playlists.list を叩くため、
+        dedupe の --refresh はどこからも読まれない死にオプションだった。
+        """
+        from src.main import app as cli_app
+
+        result = runner.invoke(cli_app, ["playlist", "dedupe", "--help"])
+        assert result.exit_code == 0
+        assert "--refresh" not in result.output, "死にオプションが残っている"
+
+    def test_orphans_still_offers_refresh(self):
+        """orphans 側の --refresh は機能しているので残す。"""
+        from src.main import app as cli_app
+
+        result = runner.invoke(cli_app, ["playlist", "orphans", "--help"])
+        assert result.exit_code == 0
+        assert "--refresh" in result.output
+
+
+class TestMergeDeleteAffordability:
+    """Minor: プレイリスト削除の予算不足を 403 と誤って報告しない。"""
+
+    def test_insufficient_budget_for_delete_is_not_reported_as_quota_error(self):
+        from src.commands.playlist import _merge_duplicate_group
+        from src.lib.core.quota import QuotaLedger
+        from src.lib.video.playlist import PlaylistInfo
+
+        canonical = PlaylistInfo(
+            id="PL_OLD", title="運動会", item_count=1,
+            privacy="private", published_at="2020-01-01T00:00:00Z",
+        )
+        dup = PlaylistInfo(
+            id="PL_NEW", title="運動会", item_count=0,
+            privacy="private", published_at="2024-01-01T00:00:00Z",
+        )
+        playlist_map = {"PL_OLD": {"v1"}, "PL_NEW": set()}
+
+        pl_manager = MagicMock()
+        pl_manager.delete_playlist.return_value = True
+
+        # 予算 0 -> delete (50 units) を賄えない
+        moved, deleted, interrupted = _merge_duplicate_group(
+            canonical, [dup], pl_manager, playlist_map, QuotaLedger(0), max_items=100
+        )
+
+        assert deleted == 0
+        assert interrupted is False, "予算不足を実際のクォータ枯渇と混同している"
+        pl_manager.delete_playlist.assert_not_called()
+
+
+class TestDefaultMaxItemsNullTimestamp:
+    """Minor: timestamp が NULL のレコードで TypeError にならない。"""
+
+    def test_null_timestamp_does_not_raise(self, monkeypatch):
+        from src.commands import playlist as playlist_cmd
+
+        history = MagicMock()
+        history.get_all_records.return_value = [
+            {"status": "success", "timestamp": None},
+            {"status": "success"},
+        ]
+        monkeypatch.setattr(
+            type(playlist_cmd.config), "effective_daily_quota", lambda self: 10000
+        )
+        monkeypatch.setattr(playlist_cmd.config.quota, "reserve", 0)
+
+        assert playlist_cmd._default_max_items(history) == 200
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import typer
 from rich.console import Console
@@ -16,6 +16,9 @@ from ..lib.video.playlist import PlaylistInfo, PlaylistManager
 
 app = typer.Typer(help="Manage playlists.")
 console = Console()
+
+# オーファン一覧をそのまま出力する最大件数。これを超えたら件数で省略する。
+ORPHAN_PREVIEW_LIMIT = 50
 
 def _get_manager():
     try:
@@ -151,11 +154,31 @@ def rename_playlist(
         console.print("[red]Failed to rename playlist.[/]")
         raise typer.Exit(code=1)
 
-def _make_cache():
+def _make_cache() -> Optional[SnapshotCache]:
     """設定に応じて SnapshotCache を作る。無効なら None。"""
     if not config.cache.enabled:
         return None
     return SnapshotCache(db_path=config.cache.path, ttl_hours=config.cache.ttl_hours)
+
+
+def _today_used_units(history: HistoryManager) -> int:
+    """本日すでに消費したと推定されるユニット数を返す。
+
+    本日のアップロード件数 x 1600 を使用済みとみなす。実際の残量は
+    API 側にしか無いため厳密ではないが、QuotaLedger と 403 検知で補う。
+
+    「本日」の境界は既存の check_quota_limit (upload_manager.py) と
+    揃えてローカル時間の午前0時とする。
+    """
+    now = datetime.now()
+    today_start = datetime(now.year, now.month, now.day).timestamp()
+    records = history.get_all_records(limit=0)
+    today_uploads = [
+        r for r in records
+        # timestamp が NULL の行があると None >= float で TypeError になる
+        if r.get("status") == "success" and (r.get("timestamp") or 0) >= today_start
+    ]
+    return len(today_uploads) * COSTS["upload"]
 
 
 def _default_max_items(
@@ -163,28 +186,37 @@ def _default_max_items(
 ) -> int:
     """本日の残り予算から処理可能な件数を見積もる。
 
-    本日のアップロード件数 x 1600 を使用済みとみなす。実際の残量は
-    API 側にしか無いため厳密ではないが、QuotaLedger と 403 検知で補う。
-
-    「本日」の境界は既存の check_quota_limit (upload_manager.py:44-45) と
-    揃えてローカル時間の午前0時とする。
-
     unit_cost: 1件あたりの消費ユニット。orphans は insert のみ (50) だが、
     dedupe は insert + delete (100) なので呼び出し側で変える。
     """
-    now = datetime.now()
-    today_start = datetime(now.year, now.month, now.day).timestamp()
-    records = history.get_all_records(limit=0)
-    today_uploads = [
-        r for r in records
-        if r.get("status") == "success" and r.get("timestamp", 0) >= today_start
-    ]
-    used = len(today_uploads) * COSTS["upload"]
+    used = _today_used_units(history)
     budget = max(0, config.effective_daily_quota() - config.quota.reserve - used)
     return budget // unit_cost
 
 
-def _resolve_target_playlist(record) -> str:
+def _print_no_budget_message(history: HistoryManager) -> None:
+    """本日の残量では1件も処理できないことを、対処法とともに知らせる。
+
+    「リセットを待て」だけでは、毎日大量にアップロードしているユーザーには
+    恒久的に壊れているように見える。実際には quota.daily_limit が
+    実際の GCP 上限より小さいことが原因なので、その旨を明示する。
+    """
+    limit = config.effective_daily_quota()
+    used = _today_used_units(history)
+    console.print(
+        f"[bold red]本日の推定残量では1件も処理できません"
+        f"(上限 {limit:,} / 本日の推定使用 {used:,} ユニット / "
+        f"予備 {config.quota.reserve:,} ユニット)。[/]"
+    )
+    console.print(
+        "[dim]実際の GCP クォータ上限が異なる場合は、settings.yaml の "
+        "quota.daily_limit を実値に設定してください。"
+        "上限を引き上げていない場合は、クォータのリセット "
+        "(太平洋時間の深夜 / 日本時間の16〜17時頃) 後に再実行してください。[/]"
+    )
+
+
+def _resolve_target_playlist(record) -> Optional[str]:
     """履歴レコードから割り当て先のプレイリスト名を決める。
 
     playlist_name を優先し、無ければファイルパスの親ディレクトリ名を使う。
@@ -205,11 +237,24 @@ def _resolve_target_playlist(record) -> str:
     return None
 
 
-def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
+def _fix_orphans(
+    orphans: List[Dict[str, Any]],
+    pl_manager: PlaylistManager,
+    history: HistoryManager,
+    ledger: QuotaLedger,
+    max_items: int,
+    yes: bool,
+    cache: Optional[SnapshotCache] = None,
+) -> Tuple[int, int]:
     """オーファンをプレイリストへ割り当てる。
 
     Returns: (assigned, remaining) — 成功件数と未処理件数。
     quota 枯渇・予算超過・max_items 到達のいずれかで中断する。
+
+    cache: 成功した割り当てを増分反映するスナップショットキャッシュ。
+    これを渡さないと、TTL (24時間) 内の再実行で get_all_playlists_map が
+    「割り当てる前のマップ」を返し、同じオーファンが再構築されて
+    50 units x N を空費する。
     """
     targets = orphans[:max_items]
 
@@ -229,6 +274,8 @@ def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
     assigned = 0
     processed = 0
 
+    skipped_synced = 0
+
     for orphan in targets:
         vid_id = orphan["id"]
         record = history.get_record_by_video_id(vid_id)
@@ -239,7 +286,24 @@ def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
             processed += 1
             continue
 
-        if not ledger.can_afford("insert"):
+        # 履歴が「追加済み (1)」と言っているものは再処理しない。
+        # キャッシュを消した場合や --refresh を使った場合でも、
+        # 同じ動画を何度も insert して quota を空費しないための保険。
+        # 三値であることに注意: 0 (追加失敗) と None (この機能より前の
+        # 既存レコード = 不明) は再試行の対象なのでスキップしてはいけない。
+        if record.get("playlist_synced") == 1:
+            skipped_synced += 1
+            processed += 1
+            continue
+
+        # プレイリストが未作成なら playlists.insert (50 units) も発生する。
+        # find_playlist_id はキャッシュを見るだけで API を叩かないため、
+        # ここで先に確かめて帳簿に正しく計上する。
+        # (見落とすと実消費が帳簿の最大2倍になる)
+        needs_new_playlist = pl_manager.find_playlist_id(target_playlist) is None
+        insert_count = 2 if needs_new_playlist else 1
+
+        if not ledger.can_afford("insert", insert_count):
             console.print(
                 f"[bold yellow]予算上限に達しました "
                 f"({ledger.spent:,}/{ledger.budget:,} units)。中断します。[/]"
@@ -257,11 +321,15 @@ def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
                 continue
 
             ok = pl_manager.add_video_to_playlist(pl_id, vid_id)
-            ledger.charge("insert")
+            ledger.charge("insert", insert_count)
             history.set_playlist_synced(vid_id, ok)
 
             if ok:
                 assigned += 1
+                # キャッシュにも即座に反映する。これが無いと TTL 内の
+                # 再実行で同じオーファンが再構築されてしまう。
+                if cache is not None:
+                    cache.add_playlist_item(pl_id, vid_id)
                 console.print(f"[green]Assigned {orphan['title']} -> {target_playlist}[/]")
             else:
                 console.print(f"[red]Failed to assign {orphan['title']} -> {target_playlist}[/]")
@@ -278,6 +346,11 @@ def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
             )
             break
 
+    if skipped_synced:
+        console.print(
+            f"[dim]追加済みとして記録されていた {skipped_synced} 件はスキップしました。[/]"
+        )
+
     remaining = len(orphans) - processed
     return assigned, remaining
 
@@ -285,7 +358,7 @@ def _fix_orphans(orphans, pl_manager, history, ledger, max_items, yes):
 @app.command("orphans")
 def list_orphans(
     fix: bool = typer.Option(False, "--fix", help="Automatically assign orphans to playlists based on history"),
-    max_items: int = typer.Option(None, "--max-items", help="1回の実行で処理する最大件数 (既定: 本日の残り予算から算出)"),
+    max_items: Optional[int] = typer.Option(None, "--max-items", help="1回の実行で処理する最大件数 (既定: 本日の残り予算から算出)"),
     refresh: bool = typer.Option(False, "--refresh", help="キャッシュを無視してAPIから取得し直す"),
     offline: bool = typer.Option(False, "--offline", help="APIを叩かずキャッシュのみで判定する (0 units)"),
     yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation for fix"),
@@ -370,9 +443,13 @@ def list_orphans(
             f"不明 (この機能より前の記録) {synced_unknown}[/]"
         )
 
+        # 数千件を無条件に流すと確認プロンプトが画面外に押し出されるため、
+        # 多い場合は先頭だけ出して残りは件数で示す。
         console.print("\n[bold]Orphan Videos:[/]")
-        for orphan in orphans:
+        for orphan in orphans[:ORPHAN_PREVIEW_LIMIT]:
             console.print(f"- {orphan['title']} ({orphan['id']})")
+        if len(orphans) > ORPHAN_PREVIEW_LIMIT:
+            console.print(f"[dim]... 他 {len(orphans) - ORPHAN_PREVIEW_LIMIT} 件[/]")
 
         if not fix:
             console.print("\n[dim]Run with --fix to attempt automatic assignment based on local history.[/]")
@@ -384,14 +461,13 @@ def list_orphans(
         budget_items = _default_max_items(history)
         limit = min(max_items, budget_items) if max_items is not None else budget_items
         if limit <= 0:
-            console.print(
-                "[bold red]本日の推定残量では1件も処理できません。"
-                "クォータのリセット後に再実行してください。[/]"
-            )
+            _print_no_budget_message(history)
             return
 
         ledger = QuotaLedger(budget_items * COSTS["insert"])
-        assigned, remaining = _fix_orphans(orphans, pl_manager, history, ledger, limit, yes)
+        assigned, remaining = _fix_orphans(
+            orphans, pl_manager, history, ledger, limit, yes, cache=cache
+        )
 
         console.print(
             f"\n[bold green]完了: {assigned} 件を割り当てました[/] "
@@ -417,6 +493,7 @@ def _merge_duplicate_group(
     playlist_map: Dict[str, Set[str]],
     ledger: QuotaLedger,
     max_items: int,
+    failed_moves: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[int, int, bool]:
     """1つの重複グループを統合する。
 
@@ -425,6 +502,10 @@ def _merge_duplicate_group(
     Returns: (moved, deleted, interrupted) — 移動した動画数、削除した
     プレイリスト数、クォータ枯渇 (実際の API 403) で中断したかどうか。
     途中で中断した場合、中身が残るプレイリストは削除しない。
+
+    failed_moves: 移動に失敗した (プレイリスト名, video_id) を積むリスト。
+    削除済み・非公開の動画が混ざっていると毎回同じ失敗を繰り返して
+    quota だけ減るため、呼び出し元がまとめて報告できるようにする。
 
     安全のため、以下の場合も削除しない:
     - playlist_map に重複プレイリストのIDが無い (中身を把握していない。
@@ -465,6 +546,8 @@ def _merge_duplicate_group(
                             f"[red]移動失敗: {video_id} -> {canonical.title}[/]"
                         )
                         fully_moved = False
+                        if failed_moves is not None:
+                            failed_moves.append((dup.title, video_id))
                         continue
                     ledger.charge("insert")
                     canonical_videos.add(video_id)
@@ -472,6 +555,8 @@ def _merge_duplicate_group(
                 if not pl_manager.remove_video_from_playlist(dup.id, video_id):
                     console.print(f"[red]削除失敗: {video_id} from {dup.id}[/]")
                     fully_moved = False
+                    if failed_moves is not None:
+                        failed_moves.append((dup.title, video_id))
                     continue
                 ledger.charge("delete")
                 moved += 1
@@ -488,6 +573,16 @@ def _merge_duplicate_group(
             continue
 
         if fully_moved:
+            # 予算不足を ledger.charge の例外で検知すると、実際には 403 が
+            # 出ていないのに「クォータを使い切りました」と誤報して
+            # interrupted=True になってしまう。事前に確認して静かに打ち切る。
+            if not ledger.can_afford("delete"):
+                console.print(
+                    f"[bold yellow]予算上限に達したため削除を見送ります: "
+                    f"{dup.title} ({dup.id})[/]"
+                )
+                continue
+
             try:
                 if pl_manager.delete_playlist(dup.id):
                     deleted += 1
@@ -506,13 +601,14 @@ def dedupe_playlists(
         False, "--fix", help="重複を統合する (動画を最古のプレイリストへ移動し、空になった方を削除)"
     ),
     max_items: int = typer.Option(50, "--max-items", help="1回の実行で移動する最大動画数"),
-    refresh: bool = typer.Option(False, "--refresh", help="キャッシュを無視してAPIから取得し直す"),
     yes: bool = typer.Option(False, "-y", "--yes", help="確認プロンプトを省略"),
 ):
     """
     同名の重複プレイリストを検出し、必要なら統合する。
 
-    検出のみ (--fix なし) はキャッシュがあれば 0 units で実行できる。
+    検出のみ (--fix なし) でも、プレイリスト一覧の取得に
+    playlists.list が必要なため 0 units にはならない
+    (50件/ページなので 544 個なら約 11 units)。
     """
     setup_logging(level="INFO")
 
@@ -561,17 +657,13 @@ def dedupe_playlists(
         )
         limit = min(max_items, budget_items)
         if limit <= 0:
-            console.print(
-                "[bold red]本日の推定残量では1件も処理できません。"
-                "クォータのリセット後に再実行してください。[/]"
-            )
+            _print_no_budget_message(history)
             return
 
         try:
             # --fix は 24 時間キャッシュされたスナップショットに基づいて
             # 削除してはいけない (中身の入ったプレイリストを誤って空と
-            # 判定して削除してしまう)。必ず最新を取得する。--refresh は
-            # 検出のみのときの明示的な更新手段として残す。
+            # 判定して削除してしまう)。必ず最新を取得する。
             playlist_map = pl_manager.get_all_playlists_map(refresh=True)
         except QuotaExceededError:
             console.print("[bold red]クォータを使い切っているため統合できません。[/]")
@@ -587,51 +679,89 @@ def dedupe_playlists(
             target_count * (COSTS["insert"] + COSTS["delete"])
             + total_dups * COSTS["delete"]
         )
+        # 削除分 (total_dups * 50) は target_count と違って limit で
+        # 頭打ちにならないため、estimated をそのまま予算にすると本日の
+        # 残量を無視して大量に消費しうる (空の重複が200個あれば +10,000
+        # units)。必ず本日の残量で上限を掛ける。
+        budget_units = min(estimated, budget_items * (COSTS["insert"] + COSTS["delete"]))
 
         console.print(
             f"\n[bold]見積もり:[/] 最大 {target_count} 本の移動 + "
-            f"{total_dups} 個の削除 = 約 {estimated:,} units"
+            f"{total_dups} 個の削除 = 約 {estimated:,} units "
+            f"(本日の予算上限 {budget_units:,} units)"
         )
 
         if not yes:
             if not typer.confirm("統合を実行しますか?"):
                 raise typer.Abort()
 
-        ledger = QuotaLedger(estimated)
+        ledger = QuotaLedger(budget_units)
         total_moved = 0
         total_deleted = 0
         interrupted = False
+        stopped_by_limit = False
         processed_groups = 0
+        failed_moves: List[Tuple[str, str]] = []
 
         for title, items in duplicates.items():
-            if total_moved >= limit:
+            # 削除も予算を消費するため打ち切り判定に含める。移動0件でも
+            # 削除だけ進む (中身が空の重複) ケースで止まらなくなるのを防ぐ。
+            if total_moved + total_deleted >= limit:
+                stopped_by_limit = True
                 break
             console.print(f"\n[bold]統合中: {title}[/]")
             moved, deleted, group_interrupted = _merge_duplicate_group(
                 items[0], items[1:], pl_manager, playlist_map,
-                ledger, limit - total_moved,
+                ledger, limit - total_moved, failed_moves=failed_moves,
             )
             total_moved += moved
             total_deleted += deleted
-            processed_groups += 1
             if group_interrupted:
+                # 中断したグループは処理済みではない。数えてしまうと
+                # 残グループ数が1件過少になる。
                 interrupted = True
                 break
+            processed_groups += 1
 
         console.print(
             f"\n[bold green]完了: {total_moved} 本を移動、"
             f"{total_deleted} 個のプレイリストを削除しました[/] "
             f"(消費 約 {ledger.spent:,} units)"
         )
-        if interrupted:
+
+        if failed_moves:
+            console.print(
+                f"\n[bold yellow]移動できなかった動画 {len(failed_moves)} 件[/] "
+                "(削除済み・非公開の可能性があります):"
+            )
+            for pl_title, video_id in failed_moves[:ORPHAN_PREVIEW_LIMIT]:
+                console.print(f"[yellow]- {pl_title} -> {video_id}[/]")
+            if len(failed_moves) > ORPHAN_PREVIEW_LIMIT:
+                console.print(
+                    f"[dim]... 他 {len(failed_moves) - ORPHAN_PREVIEW_LIMIT} 件[/]"
+                )
+            console.print(
+                "[dim]これらを含むグループは、再実行しても同じ失敗を繰り返して"
+                "クォータだけ消費します。YouTube 上で該当動画を確認してください。[/]"
+            )
+
+        if interrupted or stopped_by_limit:
             remaining_groups = len(duplicates) - processed_groups
             console.print(
                 f"[bold yellow]残り {remaining_groups} グループ[/] — "
                 "同じコマンドを再実行すると残りから再開します。"
             )
-        if cache is not None:
-            cache.clear()
-            console.print("[dim]キャッシュを破棄しました (次回は最新を取得します)。[/]")
+
+        # dedupe はプレイリストとその中身しか変えない。videos まで捨てると
+        # 次回の orphans で動画一覧の再取得 (約400 units) が無駄に発生する。
+        # 何も変更していないなら捨てる理由自体が無い。
+        if cache is not None and (total_moved or total_deleted):
+            cache.clear("playlists")
+            cache.clear("playlist_items")
+            console.print(
+                "[dim]プレイリストのキャッシュを破棄しました "
+                "(次回は最新を取得します)。[/]"
+            )
 
     finally:
         if history is not None:
