@@ -84,6 +84,97 @@ class TestPlaylistItems:
         assert cache.load_playlist_map() == {}
 
 
+class TestAddPlaylistItem:
+    """--fix で1件追加した直後にキャッシュへ増分反映する (Critical 1a)。
+
+    これを怠ると TTL (24時間) 内の再実行で同じ動画が再処理され、
+    50 units x N を消費して正味の進捗がゼロになる。
+    """
+
+    def test_adds_to_existing_playlist(self, cache):
+        cache.save_playlist_items("PL1", {"v1"})
+        cache.add_playlist_item("PL1", "v2")
+        assert cache.load_playlist_map() == {"PL1": {"v1", "v2"}}
+
+    def test_adds_to_unknown_playlist(self, cache):
+        """まだキャッシュに無いプレイリストでも行を作る。"""
+        cache.add_playlist_item("PL_NEW", "v1")
+        assert cache.load_playlist_map() == {"PL_NEW": {"v1"}}
+
+    def test_is_idempotent(self, cache):
+        cache.add_playlist_item("PL1", "v1")
+        cache.add_playlist_item("PL1", "v1")
+        assert cache.load_playlist_map() == {"PL1": {"v1"}}
+
+    def test_empty_playlist_marker_is_removed(self, cache):
+        """空として記録されていたプレイリストに1件追加したら、空ではなくなる。
+
+        empty_playlists の行が残ると load_playlist_map() が
+        setdefault で上書きしないため実害は無いが、整合性のため確実に消す。
+        """
+        cache.save_playlist_items("PL1", set())
+        assert cache.load_playlist_map() == {"PL1": set()}
+
+        cache.add_playlist_item("PL1", "v1")
+
+        assert cache.load_playlist_map() == {"PL1": {"v1"}}
+        rows = cache.conn.execute(
+            "SELECT playlist_id FROM empty_playlists WHERE playlist_id = ?", ("PL1",)
+        ).fetchall()
+        assert rows == [], "empty_playlists の印が残っている"
+
+    def test_survives_reopen(self, temp_db_path):
+        c1 = SnapshotCache(db_path=temp_db_path)
+        c1.save_playlist_items("PL1", {"v1"})
+        c1.add_playlist_item("PL1", "v2")
+        c1.close()
+
+        c2 = SnapshotCache(db_path=temp_db_path)
+        assert c2.load_playlist_map() == {"PL1": {"v1", "v2"}}
+        c2.close()
+
+
+class TestPrunePlaylistItems:
+    """全走査に含まれなかったプレイリストの行を消す (Important 4)。
+
+    消滅したプレイリストの行が残ると、そこにしか入っていない動画が
+    オーファンとして検出されなくなる。
+    """
+
+    def test_removes_playlists_not_in_keep_set(self, cache):
+        cache.save_playlist_items("PL1", {"v1"})
+        cache.save_playlist_items("PL2", {"v2"})
+        cache.save_playlist_items("PL3", set())
+
+        cache.prune_playlist_items({"PL1"})
+
+        assert cache.load_playlist_map() == {"PL1": {"v1"}}
+
+    def test_keeps_everything_when_all_ids_given(self, cache):
+        cache.save_playlist_items("PL1", {"v1"})
+        cache.save_playlist_items("PL2", set())
+
+        cache.prune_playlist_items({"PL1", "PL2"})
+
+        assert cache.load_playlist_map() == {"PL1": {"v1"}, "PL2": set()}
+
+    def test_empty_keep_set_removes_all(self, cache):
+        cache.save_playlist_items("PL1", {"v1"})
+        cache.save_playlist_items("PL2", set())
+
+        cache.prune_playlist_items(set())
+
+        assert cache.load_playlist_map() == {}
+
+    def test_removes_empty_playlist_markers_too(self, cache):
+        cache.save_playlist_items("PL1", set())
+        cache.save_playlist_items("PL2", set())
+
+        cache.prune_playlist_items({"PL2"})
+
+        assert cache.load_playlist_map() == {"PL2": set()}
+
+
 class TestVideos:
     def test_save_and_load_roundtrip(self, cache):
         cache.save_videos(VIDEOS)

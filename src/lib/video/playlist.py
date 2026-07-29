@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -531,7 +531,7 @@ class PlaylistManager:
 
     def get_all_playlists_map(
         self, refresh: bool = False, offline: bool = False
-    ) -> Dict[str, set]:
+    ) -> Dict[str, Set[str]]:
         """
         Returns a map where key is Playlist ID and value is a Set of Video IDs in that playlist.
 
@@ -563,7 +563,7 @@ class PlaylistManager:
                 return cached
 
         self._ensure_cache()
-        playlist_map = {}
+        playlist_map: Dict[str, Set[str]] = {}
 
         try:
             service = build(
@@ -591,6 +591,12 @@ class PlaylistManager:
                     self._cache.save_playlist_items(playlist_id, video_ids)
 
             if self._cache is not None:
+                # 走査対象から外れたプレイリスト (YouTube 側で削除された、
+                # dedupe で消した等) の行を落とす。save_playlist_items は
+                # 該当 playlist_id の行しか置換しないため、これを怠ると
+                # 「存在しないプレイリストの中身」がキャッシュに残り、
+                # そこにしか入っていない動画がオーファンとして検出されなくなる。
+                self._cache.prune_playlist_items(set(playlist_map.keys()))
                 # 全件を走査し終えたときだけ「完了」を記録する
                 self._cache.mark_complete("playlist_items")
 

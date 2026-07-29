@@ -78,6 +78,9 @@ class SnapshotCache:
 
         保存しただけでは新鮮とみなさない。取得が途中で中断した場合に
         部分的なデータを「完全」と誤認しないため。
+
+        注意: kind="playlists" での判定は現時点で src/ 内から使われていない
+        (load_playlists の docstring を参照)。
         """
         self._validate_kind(kind)
         row = self.conn.execute(
@@ -122,6 +125,14 @@ class SnapshotCache:
         self.conn.commit()
 
     def load_playlists(self) -> List[Dict[str, Any]]:
+        """保存済みのプレイリスト一覧を返す。
+
+        注意: 現時点で src/ 内に呼び出し元は無い (is_fresh("playlists") も同様)。
+        PlaylistManager._ensure_cache は毎回必ず playlists.list を叩き、
+        このキャッシュ層は書き込み専用になっている。dedupe の安全性が
+        「_ensure_cache が常に最新である」ことに依存しているため、
+        意図的にそのままにしてある。
+        """
         rows = self.conn.execute(
             "SELECT playlist_id, title, item_count, privacy, published_at FROM playlists"
         ).fetchall()
@@ -162,6 +173,58 @@ class SnapshotCache:
                 "INSERT INTO empty_playlists (playlist_id, fetched_at) VALUES (?, ?)",
                 (playlist_id, now),
             )
+        self.conn.commit()
+
+    def add_playlist_item(self, playlist_id: str, video_id: str) -> None:
+        """1件の動画をプレイリストのキャッシュに追加する。
+
+        --fix で実際に追加した直後に呼び、キャッシュを最新に保つ。
+        これを怠ると TTL 内の再実行で同じ動画が再処理される
+        (YouTube は videoAlreadyInPlaylist を返すので成功扱いになり、
+        50 units x N を消費して正味の進捗がゼロになる)。
+
+        空として記録されていたプレイリストは、1件入った時点で
+        空ではなくなるため empty_playlists の印を取り除く。
+        """
+        now = time.time()
+        self.conn.execute(
+            "INSERT INTO playlist_items (playlist_id, video_id, fetched_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(playlist_id, video_id) DO NOTHING",
+            (playlist_id, video_id, now),
+        )
+        self.conn.execute(
+            "DELETE FROM empty_playlists WHERE playlist_id = ?", (playlist_id,)
+        )
+        self.conn.commit()
+
+    def prune_playlist_items(self, keep_ids: Set[str]) -> None:
+        """keep_ids に含まれないプレイリストの行を削除する。
+
+        全件走査が完了したときに呼ぶこと。走査対象に含まれなくなった
+        プレイリスト (YouTube 側で削除された、dedupe で消した等) の行が
+        残り続けると、load_playlist_map() が「存在しないプレイリストの
+        中身」を返し、そこにしか入っていなかった動画がオーファンとして
+        検出されなくなる。
+
+        save_playlist_items が該当 playlist_id の行しか置換しないため、
+        全置換する save_playlists / save_videos と違ってこの後始末が要る。
+        """
+        keep = list(keep_ids)
+        if not keep:
+            self.conn.execute("DELETE FROM playlist_items")
+            self.conn.execute("DELETE FROM empty_playlists")
+            self.conn.commit()
+            return
+
+        placeholders = ",".join("?" for _ in keep)
+        self.conn.execute(
+            f"DELETE FROM playlist_items WHERE playlist_id NOT IN ({placeholders})",
+            keep,
+        )
+        self.conn.execute(
+            f"DELETE FROM empty_playlists WHERE playlist_id NOT IN ({placeholders})",
+            keep,
+        )
         self.conn.commit()
 
     def load_playlist_map(self) -> Dict[str, Set[str]]:

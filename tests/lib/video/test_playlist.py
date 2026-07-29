@@ -976,6 +976,61 @@ class TestPlaylistCacheIntegration(unittest.TestCase):
         with self.assertRaises(QuotaExceededError):
             manager.get_all_playlists_map()
 
+    @patch("src.lib.video.playlist.build")
+    def test_full_scan_prunes_vanished_playlists(self, mock_build):
+        """走査対象に含まれなくなったプレイリストの行はキャッシュから消す。
+
+        残したままだと load_playlist_map() が「存在しないプレイリストの
+        中身」を返し、そこにしか入っていなかった動画がオーファンとして
+        検出されなくなる (Important 4)。
+        """
+        # 前回の走査で存在していたが、YouTube 側で消えたプレイリスト
+        self.cache.save_playlist_items("PL_GONE", {"v_only_here"})
+        self.cache.save_playlist_items("PL_GONE_EMPTY", set())
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A")]
+        }
+        mock_service.playlistItems().list.return_value.execute.return_value = {
+            "items": [{"contentDetails": {"videoId": "v1"}}]
+        }
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        result = manager.get_all_playlists_map(refresh=True)
+
+        self.assertEqual(result, {"PL1": {"v1"}})
+        self.assertEqual(
+            self.cache.load_playlist_map(), {"PL1": {"v1"}},
+            "消滅したプレイリストの行がキャッシュに残っている",
+        )
+
+    @patch("src.lib.video.playlist.build")
+    def test_prune_is_not_called_when_scan_is_interrupted(self, mock_build):
+        """走査が完走しなかった場合は prune しない (未走査分を消さない)。"""
+        from src.lib.core.quota import QuotaExceededError
+
+        self.cache.save_playlist_items("PL_OLD", {"v_old"})
+
+        mock_service = MagicMock()
+        mock_build.return_value = mock_service
+        mock_service.playlists().list.return_value.execute.return_value = {
+            "items": [self._pl_item("PL1", "A"), self._pl_item("PL2", "B")]
+        }
+        mock_service.playlistItems().list.return_value.execute.side_effect = [
+            {"items": [{"contentDetails": {"videoId": "v1"}}]},
+            self._quota_error(),
+        ]
+        mock_service.playlistItems().list_next.return_value = None
+
+        manager = PlaylistManager(self.mock_creds, cache=self.cache)
+        with self.assertRaises(QuotaExceededError):
+            manager.get_all_playlists_map(refresh=True)
+
+        self.assertIn("PL_OLD", self.cache.load_playlist_map())
+
         self.assertFalse(
             self.cache.is_fresh("playlist_items"),
             "走査が完走していないのに完了と記録されている",
